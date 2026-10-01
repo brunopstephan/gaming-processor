@@ -114,3 +114,112 @@ func TestNewEnvelopeValidation(t *testing.T) {
 		})
 	}
 }
+
+func marshalData(t *testing.T, d Data) string {
+	t.Helper()
+	env, err := NewEnvelope(uuid.MustParse("0192f2a0-0000-7000-8000-000000000001"), d, "corr-1", "", time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(b, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	return string(parsed.Data)
+}
+
+func TestWagerTransactionProcessedExternalJSON(t *testing.T) {
+	ref := uuid.MustParse("0192f298-345e-7e38-af88-e43f851a819e")
+	got := marshalData(t, WagerTransactionProcessed{
+		TransactionID:          uuid.MustParse("0192f298-345e-7e38-af88-e43f851a819d"),
+		WalletID:               uuid.MustParse("0192f291-27dd-7d3f-8071-5f8685deef37"),
+		PlayerID:               uuid.MustParse("0192f291-27dd-7d3f-8071-5f8685deef38"),
+		Origin:                 "EXTERNAL",
+		Kind:                   "REFUND",
+		Money:                  brl(t, "25.00"),
+		ProviderID:             "provider-a",
+		ExternalTransactionID:  "tx-2",
+		RoundID:                "round-1",
+		GameID:                 "game-1",
+		ReferenceTransactionID: &ref,
+		BalanceAfter:           brl(t, "100.00"),
+	})
+	want := `{"transactionId":"0192f298-345e-7e38-af88-e43f851a819d","walletId":"0192f291-27dd-7d3f-8071-5f8685deef37",` +
+		`"playerId":"0192f291-27dd-7d3f-8071-5f8685deef38","origin":"EXTERNAL","kind":"REFUND",` +
+		`"money":{"amount":"25.00","currency":"BRL"},"providerId":"provider-a","externalTransactionId":"tx-2",` +
+		`"roundId":"round-1","gameId":"game-1","referenceTransactionId":"0192f298-345e-7e38-af88-e43f851a819e",` +
+		`"balanceAfter":{"amount":"100.00","currency":"BRL"}}`
+	if got != want {
+		t.Fatalf("data JSON\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestWagerTransactionProcessedOpeningJSON(t *testing.T) {
+	got := marshalData(t, WagerTransactionProcessed{
+		TransactionID: uuid.MustParse("0192f298-345e-7e38-af88-e43f851a819d"),
+		WalletID:      uuid.MustParse("0192f291-27dd-7d3f-8071-5f8685deef37"),
+		PlayerID:      uuid.MustParse("0192f291-27dd-7d3f-8071-5f8685deef38"),
+		Origin:        "INTERNAL",
+		Kind:          "OPENING",
+		Money:         brl(t, "1000.00"),
+		BalanceAfter:  brl(t, "1000.00"),
+	})
+	want := `{"transactionId":"0192f298-345e-7e38-af88-e43f851a819d","walletId":"0192f291-27dd-7d3f-8071-5f8685deef37",` +
+		`"playerId":"0192f291-27dd-7d3f-8071-5f8685deef38","origin":"INTERNAL","kind":"OPENING",` +
+		`"money":{"amount":"1000.00","currency":"BRL"},"balanceAfter":{"amount":"1000.00","currency":"BRL"}}`
+	if got != want {
+		t.Fatalf("data JSON\n got: %s\nwant: %s", got, want)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(got), &m); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"providerId", "externalTransactionId", "roundId", "gameId", "referenceTransactionId"} {
+		if _, ok := m[k]; ok {
+			t.Errorf("%s must be absent for OPENING", k)
+		}
+	}
+}
+
+func TestWagerTransactionRejectedJSON(t *testing.T) {
+	got := marshalData(t, WagerTransactionRejected{
+		TransactionID:         uuid.MustParse("0192f298-345e-7e38-af88-e43f851a819d"),
+		WalletID:              uuid.MustParse("0192f291-27dd-7d3f-8071-5f8685deef37"),
+		ProviderID:            "provider-a",
+		ExternalTransactionID: "tx-1",
+		Kind:                  "BET",
+		Money:                 brl(t, "80.00"),
+		FailureCode:           "INSUFFICIENT_FUNDS",
+	})
+	want := `{"transactionId":"0192f298-345e-7e38-af88-e43f851a819d","walletId":"0192f291-27dd-7d3f-8071-5f8685deef37",` +
+		`"providerId":"provider-a","externalTransactionId":"tx-1","kind":"BET",` +
+		`"money":{"amount":"80.00","currency":"BRL"},"failureCode":"INSUFFICIENT_FUNDS"}`
+	if got != want {
+		t.Fatalf("data JSON\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestWagerTransactionPendingReferenceJSON(t *testing.T) {
+	got := marshalData(t, WagerTransactionPendingReference{
+		TransactionID:                  uuid.MustParse("0192f298-345e-7e38-af88-e43f851a819d"),
+		WalletID:                       uuid.MustParse("0192f291-27dd-7d3f-8071-5f8685deef37"),
+		ProviderID:                     "provider-a",
+		ExternalTransactionID:          "tx-3",
+		Kind:                           "ROLLBACK",
+		ReferenceExternalTransactionID: "tx-2",
+		Attempts:                       1,
+		NextAttemptAt:                  FormatTime(time.Date(2026, 9, 8, 12, 0, 2, 0, time.UTC)),
+	})
+	want := `{"transactionId":"0192f298-345e-7e38-af88-e43f851a819d","walletId":"0192f291-27dd-7d3f-8071-5f8685deef37",` +
+		`"providerId":"provider-a","externalTransactionId":"tx-3","kind":"ROLLBACK",` +
+		`"referenceExternalTransactionId":"tx-2","attempts":1,"nextAttemptAt":"2026-09-08T12:00:02.000Z"}`
+	if got != want {
+		t.Fatalf("data JSON\n got: %s\nwant: %s", got, want)
+	}
+}

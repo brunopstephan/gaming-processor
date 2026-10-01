@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -161,5 +162,42 @@ func TestPayloadHashFields(t *testing.T) {
 	sum := sha256.Sum256([]byte(canonical))
 	if h.PayloadHash() != hex.EncodeToString(sum[:]) {
 		t.Fatal("canonical JSON must not HTML-escape")
+	}
+}
+
+func TestParseCommandControlCharacters(t *testing.T) {
+	fields := []struct {
+		name  string
+		set   func(r *RawCommand, v string)
+		code  FailureCode
+		field string
+	}{
+		{"providerId", func(r *RawCommand, v string) { r.ProviderID = v }, FailureInvalidField, "providerId"},
+		{"externalTransactionId", func(r *RawCommand, v string) { r.ExternalTransactionID = v }, FailureInvalidField, "externalTransactionId"},
+		{"roundId", func(r *RawCommand, v string) { r.RoundID = v }, FailureInvalidField, "roundId"},
+		{"gameId", func(r *RawCommand, v string) { r.GameID = v }, FailureInvalidField, "gameId"},
+		{"referenceExternalTransactionId", func(r *RawCommand, v string) {
+			r.Kind, r.ReferenceExternalTransactionID = "WIN", v
+		}, FailureInvalidField, "referenceExternalTransactionId"},
+		{"idempotencyKey", func(r *RawCommand, v string) { r.IdempotencyKey = v }, FailureInvalidIdempotencyKey, "idempotencyKey"},
+	}
+	for _, f := range fields {
+		for _, bad := range []string{"a\x00b", "a\nb", "\tx", "a\u0085b"} {
+			t.Run(f.name+fmt.Sprintf("%q", bad), func(t *testing.T) {
+				raw := validRaw()
+				f.set(&raw, bad)
+				_, err := ParseCommand(raw)
+				var ie *InputError
+				if !errors.As(err, &ie) {
+					t.Fatalf("error = %v, want *InputError", err)
+				}
+				for _, v := range ie.Violations {
+					if v.Code == f.code && v.Field == f.field {
+						return
+					}
+				}
+				t.Fatalf("violations %+v do not contain %s on %s", ie.Violations, f.code, f.field)
+			})
+		}
 	}
 }

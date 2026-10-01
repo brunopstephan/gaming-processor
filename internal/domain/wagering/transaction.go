@@ -83,6 +83,9 @@ func NewExternal(id uuid.UUID, cmd Command, now time.Time) (*WagerTransaction, e
 		cmd.RoundID == "" || cmd.GameID == "":
 		return nil, fmt.Errorf("%w: external metadata is required", ErrInvalidTransaction)
 	}
+	if vs := kindPolicyViolations(cmd.Kind, cmd.Money, cmd.ReferenceExternalTransactionID); len(vs) > 0 {
+		return nil, fmt.Errorf("%w: %s %s", ErrInvalidTransaction, vs[0].Field, vs[0].Reason)
+	}
 	now = now.UTC()
 	return &WagerTransaction{
 		id:                             id,
@@ -133,14 +136,26 @@ func (t *WagerTransaction) CompleteOpening(w *wallet.Wallet, entry wallet.Ledger
 	if t.kind != KindOpening {
 		return fmt.Errorf("%w: CompleteOpening on %s", ErrInvalidTransition, t.kind)
 	}
-	if w.ID() != t.walletID || entry.TransactionID() != t.id || entry.WalletID() != t.walletID {
+	switch {
+	case now.IsZero():
+		return fmt.Errorf("%w: now is required", ErrInvalidTransaction)
+	case w == nil:
+		return fmt.Errorf("%w: wallet is required", ErrInvalidTransaction)
+	case w.ID() != t.walletID || entry.TransactionID() != t.id || entry.WalletID() != t.walletID:
 		return fmt.Errorf("%w: wallet or entry does not belong to this OPENING", ErrInvalidTransaction)
+	case entry.Direction() != wallet.DirectionCredit || !entry.Amount().Equal(t.money) || !entry.BalanceBefore().IsZero():
+		return fmt.Errorf("%w: entry must credit the OPENING amount from a zero balance", ErrInvalidTransaction)
+	case w.Version() != wallet.InitialVersion:
+		return fmt.Errorf("%w: wallet is not newly opened", ErrInvalidTransaction)
 	}
 	return t.complete(w, &entry, now)
 }
 
 // MarkFailed records a permanent infrastructure failure for audit.
 func (t *WagerTransaction) MarkFailed(now time.Time) error {
+	if now.IsZero() {
+		return fmt.Errorf("%w: now is required", ErrInvalidTransaction)
+	}
 	if err := t.transition(StatusFailed, now); err != nil {
 		return err
 	}
@@ -182,11 +197,19 @@ func Rehydrate(s State) (*WagerTransaction, error) {
 		failureCode:                    s.FailureCode,
 		resultBalance:                  s.ResultBalance,
 		attempts:                       s.Attempts,
-		nextAttemptAt:                  s.NextAttemptAt,
-		createdAt:                      s.CreatedAt,
-		updatedAt:                      s.UpdatedAt,
-		processedAt:                    s.ProcessedAt,
+		nextAttemptAt:                  utcOrZero(s.NextAttemptAt),
+		createdAt:                      s.CreatedAt.UTC(),
+		updatedAt:                      s.UpdatedAt.UTC(),
+		processedAt:                    utcOrZero(s.ProcessedAt),
 	}, nil
+}
+
+// utcOrZero converts t to UTC, keeping the zero time as the zero value.
+func utcOrZero(t time.Time) time.Time {
+	if t.IsZero() {
+		return time.Time{}
+	}
+	return t.UTC()
 }
 
 func (s State) validate() error {
@@ -217,6 +240,9 @@ func (s State) validate() error {
 			s.PayloadHash == "" || s.RoundID == "" || s.GameID == "" {
 			return fail("external origin requires an external kind and metadata")
 		}
+		if vs := kindPolicyViolations(s.Kind, s.Money, s.ReferenceExternalTransactionID); len(vs) > 0 {
+			return fail(vs[0].Field + " " + vs[0].Reason)
+		}
 	default:
 		return fail("unknown origin")
 	}
@@ -224,6 +250,10 @@ func (s State) validate() error {
 	case StatusProcessed:
 		if !s.ResultBalance.IsValid() || s.FailureCode != "" {
 			return fail("PROCESSED requires a result balance and no failure code")
+		}
+		resolves := s.Kind.IsReversal() || (s.Kind == KindWin && s.ReferenceExternalTransactionID != "")
+		if resolves && (s.ReferenceTransactionID == uuid.Nil || !s.ReferenceKind.IsValid()) {
+			return fail("PROCESSED operation with a reference requires the resolved reference id and kind")
 		}
 	case StatusRejected:
 		if !s.FailureCode.IsBusinessRejection() {

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"unicode"
 
 	"github.com/google/uuid"
 
@@ -62,31 +64,22 @@ func ParseCommand(raw RawCommand) (Command, error) {
 		v.add(FailureMissingIdempotencyKey, "idempotencyKey", "is required")
 	case len(raw.IdempotencyKey) > MaxFieldLength:
 		v.add(FailureInvalidIdempotencyKey, "idempotencyKey", fmt.Sprintf("must be at most %d bytes", MaxFieldLength))
+	case hasControlChar(raw.IdempotencyKey):
+		v.add(FailureInvalidIdempotencyKey, "idempotencyKey", "must not contain control characters")
 	}
 	playerID := v.parseID("playerId", raw.PlayerID)
 	walletID := v.parseID("walletId", raw.WalletID)
 	kind, kindOK := v.parseKind(raw.Kind)
-	amount, moneyOK := v.parseMoney(raw.Amount, raw.Currency)
+	amount, _ := v.parseMoney(raw.Amount, raw.Currency)
 
-	if kindOK && moneyOK {
-		switch {
-		case kind == KindLoss && !amount.IsZero():
-			v.add(FailureInvalidAmountForKind, "money.amount", "LOSS requires 0.00")
-		case kind != KindLoss && !amount.IsPositive():
-			v.add(FailureInvalidAmountForKind, "money.amount", fmt.Sprintf("%s requires an amount greater than 0.00", kind))
-		}
-	}
 	ref := raw.ReferenceExternalTransactionID
 	if kindOK {
-		switch {
-		case kind.IsReversal() && ref == "":
-			v.add(FailureMissingReference, "referenceExternalTransactionId", fmt.Sprintf("is required for %s", kind))
-		case (kind == KindBet || kind == KindLoss) && ref != "":
-			v.add(FailureReferenceNotAllowed, "referenceExternalTransactionId", fmt.Sprintf("is not allowed for %s", kind))
+		for _, pv := range kindPolicyViolations(kind, amount, ref) {
+			v.add(pv.Code, pv.Field, pv.Reason)
 		}
 	}
-	if len(ref) > MaxFieldLength {
-		v.add(FailureInvalidField, "referenceExternalTransactionId", fmt.Sprintf("must be at most %d bytes", MaxFieldLength))
+	if ref != "" {
+		v.checkText("referenceExternalTransactionId", ref)
 	}
 	if len(v) > 0 {
 		return Command{}, &InputError{Violations: v}
@@ -145,9 +138,50 @@ func (v *violations) requireText(field, value string) {
 	switch {
 	case value == "":
 		v.add(FailureMissingField, field, "is required")
+	default:
+		v.checkText(field, value)
+	}
+}
+
+// checkText flags a non-empty free-text value that is too long or carries
+// control characters.
+func (v *violations) checkText(field, value string) {
+	switch {
 	case len(value) > MaxFieldLength:
 		v.add(FailureInvalidField, field, fmt.Sprintf("must be at most %d bytes", MaxFieldLength))
+	case hasControlChar(value):
+		v.add(FailureInvalidField, field, "must not contain control characters")
 	}
+}
+
+func hasControlChar(s string) bool {
+	return strings.ContainsFunc(s, unicode.IsControl)
+}
+
+// kindPolicyViolations is the single source of the kind/amount/reference
+// policy: LOSS requires exactly 0.00; BET, WIN, REFUND and ROLLBACK require
+// more than 0.00; REFUND and ROLLBACK require a reference; BET and LOSS forbid
+// one. An invalid m skips the amount rule (it is reported elsewhere).
+func kindPolicyViolations(kind Kind, m money.Money, ref string) []Violation {
+	var out []Violation
+	if m.IsValid() {
+		switch {
+		case kind == KindLoss && !m.IsZero():
+			out = append(out, Violation{Code: FailureInvalidAmountForKind, Field: "money.amount", Reason: "LOSS requires 0.00"})
+		case kind != KindLoss && !m.IsPositive():
+			out = append(out, Violation{Code: FailureInvalidAmountForKind, Field: "money.amount",
+				Reason: fmt.Sprintf("%s requires an amount greater than 0.00", kind)})
+		}
+	}
+	switch {
+	case kind.IsReversal() && ref == "":
+		out = append(out, Violation{Code: FailureMissingReference, Field: "referenceExternalTransactionId",
+			Reason: fmt.Sprintf("is required for %s", kind)})
+	case (kind == KindBet || kind == KindLoss) && ref != "":
+		out = append(out, Violation{Code: FailureReferenceNotAllowed, Field: "referenceExternalTransactionId",
+			Reason: fmt.Sprintf("is not allowed for %s", kind)})
+	}
+	return out
 }
 
 func (v *violations) parseID(field, value string) uuid.UUID {

@@ -66,6 +66,14 @@ func (t *WagerTransaction) Process(in ProcessInput) (*wallet.LedgerEntry, error)
 	if t.status != StatusPending && t.status != StatusPendingReference {
 		return nil, fmt.Errorf("%w: cannot process a %s transaction", ErrInvalidTransition, t.status)
 	}
+	if in.Now.IsZero() {
+		return nil, fmt.Errorf("%w: now is required", ErrInvalidTransaction)
+	}
+	if t.needsReference() && in.Reference != nil {
+		if err := in.Reference.validate(); err != nil {
+			return nil, err
+		}
+	}
 	now := in.Now.UTC()
 	w := in.Wallet
 	switch {
@@ -80,7 +88,10 @@ func (t *WagerTransaction) Process(in ProcessInput) (*wallet.LedgerEntry, error)
 	}
 
 	if t.needsReference() {
-		code, wait := t.resolveReference(in.Reference, in.ReferenceAlreadyReversed)
+		code, wait, err := t.resolveReference(in.Reference, in.ReferenceAlreadyReversed)
+		if err != nil {
+			return nil, err
+		}
 		if wait {
 			return nil, t.waitForReference(in.RetryPolicy, in.Reference != nil, now)
 		}
@@ -116,37 +127,58 @@ func (t *WagerTransaction) needsReference() bool {
 	return t.kind.IsReversal() || (t.kind == KindWin && t.referenceExternalTransactionID != "")
 }
 
+// validate reports a snapshot that cannot come from a stored transaction.
+// That is caller misuse, not a business rejection.
+func (r Reference) validate() error {
+	switch {
+	case r.ID == uuid.Nil || r.WalletID == uuid.Nil || r.PlayerID == uuid.Nil:
+		return fmt.Errorf("%w: reference id, walletId and playerId are required", ErrInvalidTransaction)
+	case !r.Status.IsValid() || !r.Kind.IsValid():
+		return fmt.Errorf("%w: reference has unknown status %q or kind %q", ErrInvalidTransaction, r.Status, r.Kind)
+	case !r.Money.IsValid():
+		return fmt.Errorf("%w: reference money is invalid", ErrInvalidTransaction)
+	}
+	return nil
+}
+
 // resolveReference checks ref and records it on t when it exists and is
-// final. It returns wait=true while the reference is missing or pending, or a
-// failure code when the operation must be rejected.
-func (t *WagerTransaction) resolveReference(ref *Reference, alreadyReversed bool) (FailureCode, bool) {
+// final. It returns wait=true while the reference is missing or pending, a
+// failure code when the operation must be rejected, or an error when the
+// snapshot itself is invalid (misuse).
+func (t *WagerTransaction) resolveReference(ref *Reference, alreadyReversed bool) (FailureCode, bool, error) {
 	if ref == nil {
-		return "", true
+		return "", true, nil
+	}
+	if err := ref.validate(); err != nil {
+		return "", false, err
 	}
 	switch ref.Status {
+	case StatusProcessed:
 	case StatusPending, StatusPendingReference:
-		return "", true
+		return "", true, nil
 	case StatusRejected, StatusFailed:
-		return FailureReferenceNotProcessed, false
+		return FailureReferenceNotProcessed, false, nil
+	default:
+		return "", false, fmt.Errorf("%w: reference status %q", ErrInvalidTransaction, ref.Status)
 	}
 	t.referenceTransactionID = ref.ID
 	t.referenceKind = ref.Kind
 	if !t.acceptsReferenceKind(ref.Kind) {
-		return FailureReferenceKindInvalid, false
+		return FailureReferenceKindInvalid, false, nil
 	}
 	if ref.WalletID != t.walletID || ref.PlayerID != t.playerID || ref.RoundID != t.roundID ||
 		ref.Money.Currency() != t.money.Currency() {
-		return FailureReferenceMismatch, false
+		return FailureReferenceMismatch, false, nil
 	}
 	if t.kind.IsReversal() {
 		if !ref.Money.Equal(t.money) {
-			return FailureAmountMismatch, false
+			return FailureAmountMismatch, false, nil
 		}
 		if alreadyReversed {
-			return FailureReferenceAlreadyReversed, false
+			return FailureReferenceAlreadyReversed, false, nil
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 func (t *WagerTransaction) acceptsReferenceKind(k Kind) bool {
