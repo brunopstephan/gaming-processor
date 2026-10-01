@@ -209,6 +209,9 @@ func (s State) validate() error {
 			s.PayloadHash != "" || s.RoundID != "" || s.GameID != "" || s.ReferenceExternalTransactionID != "" {
 			return fail("internal origin must be an OPENING without external metadata")
 		}
+		if !s.Money.IsPositive() {
+			return fail("OPENING requires a strictly positive amount")
+		}
 	case OriginExternal:
 		if !s.Kind.IsExternal() || s.ProviderID == "" || s.ExternalTransactionID == "" || s.IdempotencyKey == "" ||
 			s.PayloadHash == "" || s.RoundID == "" || s.GameID == "" {
@@ -222,14 +225,24 @@ func (s State) validate() error {
 		if !s.ResultBalance.IsValid() || s.FailureCode != "" {
 			return fail("PROCESSED requires a result balance and no failure code")
 		}
-	case StatusRejected, StatusFailed:
-		if s.FailureCode == "" {
-			return fail("REJECTED/FAILED requires a failure code")
+	case StatusRejected:
+		if !s.FailureCode.IsBusinessRejection() {
+			return fail("REJECTED requires a business rejection code")
 		}
-	case StatusPendingReference:
-		if s.NextAttemptAt.IsZero() {
+	case StatusFailed:
+		if s.FailureCode != FailureInfrastructure {
+			return fail("FAILED requires FailureInfrastructure code")
+		}
+	case StatusPending, StatusPendingReference:
+		if s.FailureCode != "" {
+			return fail("PENDING/PENDING_REFERENCE must not have a failure code")
+		}
+		if s.Status == StatusPendingReference && s.NextAttemptAt.IsZero() {
 			return fail("PENDING_REFERENCE requires nextAttemptAt")
 		}
+	}
+	if s.Status.IsTerminal() && s.ProcessedAt.IsZero() {
+		return fail("terminal status requires processedAt")
 	}
 	return nil
 }

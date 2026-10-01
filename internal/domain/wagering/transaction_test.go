@@ -154,29 +154,108 @@ func TestRehydrateInvalid(t *testing.T) {
 	cmd, _ := ParseCommand(validRaw())
 	tx, _ := NewExternal(newID(t), cmd, testNow)
 	valid := tx.State()
+
+	// Create a valid OPENING state for internal-specific tests
+	walletID, playerID, txID, entryID := newID(t), newID(t), newID(t), newID(t)
+	initial := brl(t, "1000.00")
+	w, entry, _ := wallet.Open(wallet.OpenParams{
+		ID: walletID, PlayerID: playerID, InitialBalance: initial,
+		OpeningTransactionID: txID, LedgerEntryID: entryID, Now: testNow,
+	})
+	openingTx, _ := NewOpening(txID, walletID, playerID, initial, testNow)
+	openingTx.CompleteOpening(w, *entry, testNow)
+	validOpening := openingTx.State()
+
 	tests := []struct {
 		name   string
+		state  State
 		mutate func(s *State)
 	}{
-		{"nil id", func(s *State) { s.ID = uuid.Nil }},
-		{"bad status", func(s *State) { s.Status = "DONE" }},
-		{"bad kind", func(s *State) { s.Kind = "JACKPOT" }},
-		{"external opening", func(s *State) { s.Kind = KindOpening }},
-		{"internal bet", func(s *State) { s.Origin = OriginInternal }},
-		{"missing provider", func(s *State) { s.ProviderID = "" }},
-		{"missing hash", func(s *State) { s.PayloadHash = "" }},
-		{"invalid money", func(s *State) { s.Money = money.Money{} }},
-		{"rejected without code", func(s *State) { s.Status = StatusRejected }},
-		{"processed without balance", func(s *State) { s.Status = StatusProcessed }},
-		{"pending reference without next attempt", func(s *State) { s.Status = StatusPendingReference }},
+		{"nil id", valid, func(s *State) { s.ID = uuid.Nil }},
+		{"bad status", valid, func(s *State) { s.Status = "DONE" }},
+		{"bad kind", valid, func(s *State) { s.Kind = "JACKPOT" }},
+		{"external opening", valid, func(s *State) { s.Kind = KindOpening }},
+		{"internal bet", valid, func(s *State) { s.Origin = OriginInternal }},
+		{"missing provider", valid, func(s *State) { s.ProviderID = "" }},
+		{"missing hash", valid, func(s *State) { s.PayloadHash = "" }},
+		{"invalid money", valid, func(s *State) { s.Money = money.Money{} }},
+		{"rejected without code", valid, func(s *State) { s.Status = StatusRejected }},
+		{"processed without balance", valid, func(s *State) { s.Status = StatusProcessed }},
+		{"pending reference without next attempt", valid, func(s *State) { s.Status = StatusPendingReference }},
+		{"zero opening amount", validOpening, func(s *State) { s.Money = brl(t, "0.00") }},
+		{"failed with business code", valid, func(s *State) {
+			s.Status = StatusFailed
+			s.FailureCode = FailureInsufficientFunds
+			s.ProcessedAt = testNow
+		}},
+		{"rejected with infrastructure code", valid, func(s *State) {
+			s.Status = StatusRejected
+			s.FailureCode = FailureInfrastructure
+			s.ProcessedAt = testNow
+		}},
+		{"pending with failure code", valid, func(s *State) { s.FailureCode = FailureInfrastructure }},
+		{"pending reference with failure code", valid, func(s *State) {
+			s.Status = StatusPendingReference
+			s.NextAttemptAt = testNow.Add(1 * time.Hour)
+			s.FailureCode = FailureInfrastructure
+		}},
+		{"processed with failure code", valid, func(s *State) {
+			s.Status = StatusProcessed
+			s.FailureCode = FailureInsufficientFunds
+		}},
+		{"failed without processedAt", valid, func(s *State) {
+			s.Status = StatusFailed
+			s.FailureCode = FailureInfrastructure
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := valid
+			s := tt.state
 			tt.mutate(&s)
 			if _, err := Rehydrate(s); !errors.Is(err, ErrInvalidTransaction) {
 				t.Fatalf("error = %v, want ErrInvalidTransaction", err)
 			}
 		})
+	}
+}
+
+func TestRehydrateOpeningRoundTrip(t *testing.T) {
+	walletID, playerID, txID, entryID := newID(t), newID(t), newID(t), newID(t)
+	initial := brl(t, "1000.00")
+	w, entry, err := wallet.Open(wallet.OpenParams{
+		ID: walletID, PlayerID: playerID, InitialBalance: initial,
+		OpeningTransactionID: txID, LedgerEntryID: entryID, Now: testNow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := NewOpening(txID, walletID, playerID, initial, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.CompleteOpening(w, *entry, testNow); err != nil {
+		t.Fatal(err)
+	}
+	originalState := tx.State()
+
+	// Rehydrate the PROCESSED OPENING
+	back, err := Rehydrate(originalState)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify round-trip fidelity
+	if back.State() != originalState {
+		t.Fatalf("opening round trip mismatch\n got %+v\nwant %+v", back.State(), originalState)
+	}
+
+	// Verify no events on rehydration
+	if len(back.PullEvents()) != 0 {
+		t.Fatal("rehydrated opening must not record events")
+	}
+
+	// Verify terminal state
+	if err := back.MarkFailed(testNow); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatal("rehydrated processed opening must reject transitions")
 	}
 }
