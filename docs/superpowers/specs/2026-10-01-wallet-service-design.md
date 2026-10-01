@@ -69,7 +69,7 @@ explicitamente para entidades via reidratação.
 
 ### 4.1 Money
 - `type Money struct{ minor int64; currency Currency }`, campos privados, imutável. O zero value é inválido
-  (`IsValid()`), e operações sobre um Money não inicializado retornam `ErrInvalidMoney`.
+  (`IsValid()`), e operações sobre um Money não inicializado retornam `ErrUninitialized` (zero value).
 - `Currency`: qualquer código ISO 4217 cujo expoente seja 2 (tabela embutida no pacote). Códigos com outro
   expoente (JPY = 0, BHD = 3) e códigos inexistentes são rejeitados, porque a escala é fixa em 2. Os cenários
   principais usam BRL e os testes de incompatibilidade usam BRL × USD.
@@ -117,8 +117,11 @@ PROCESSED, REJECTED, FAILED: terminais, sem transições
   constraint inesperada.
 
 ### 4.4 Erros
-Erros de domínio são sentinelas ou tipos (`errors.Is`/`errors.As`), nunca `panic`. `*RejectionError{Code}` carrega
-o `FailureCode` estável. Todo I/O recebe `context.Context`.
+Erros de domínio são sentinelas ou tipos (`errors.Is`/`errors.As`), nunca `panic`. Rejeições de negócio não são
+erros Go: são uma transição para `REJECTED` com um `FailureCode` estável (`WagerTransaction.FailureCode()`). Erros de
+entrada são `*wagering.InputError` (`errors.As`) com `Violations`. Mau uso e falhas de infraestrutura são erros
+sentinela embrulhados (`errors.Is`: `ErrInvalidTransaction`, `ErrInvalidTransition`, `money.Err*`, `wallet.Err*`).
+Todo I/O recebe `context.Context`.
 
 ### 4.5 Failure codes (estáveis, documentados)
 Toda rejeição traz um `failureCode` estável e uma `category`: `CORRECTABLE` (entrada corrigível) ou `DEFINITIVE`
@@ -135,6 +138,8 @@ Toda rejeição traz um `failureCode` estável e uma `category`: `CORRECTABLE` (
   - `KIND_NOT_ALLOWED`: OPENING enviado por HTTP ou SQS
   - `INVALID_AMOUNT_FOR_KIND`: `LOSS ≠ 0.00`, ou zero em BET/WIN/REFUND/ROLLBACK
   - `MISSING_REFERENCE`: REFUND/ROLLBACK sem `referenceExternalTransactionId`
+  - `REFERENCE_NOT_ALLOWED`: BET/LOSS com `referenceExternalTransactionId`
+  - `INVALID_FIELD`: texto > 255 bytes ou com caracteres de controle
   - `MISSING_IDEMPOTENCY_KEY`
   - `INVALID_IDEMPOTENCY_KEY`
 
