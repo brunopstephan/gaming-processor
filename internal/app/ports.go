@@ -13,6 +13,11 @@ import (
 // TxManager runs fn inside one SQL transaction carried by ctx. Repositories
 // called with that ctx join the transaction; a nested call joins the outer
 // one. fn's error rolls everything back.
+//
+// A nested WithinTx joins the outer transaction (no savepoints): an error
+// swallowed inside still aborts the outer transaction. Work that must commit
+// independently (e.g. the FAILED audit write after a rollback) must start
+// from a context that carries no transaction.
 type TxManager interface {
 	WithinTx(ctx context.Context, fn func(ctx context.Context) error) error
 }
@@ -32,8 +37,13 @@ type WalletRepository interface {
 
 // TransactionRepository persists WagerTransactions.
 type TransactionRepository interface {
-	// Insert adds t unless a row with the same id, idempotency key, external
-	// id or OPENING wallet exists; inserted reports which happened.
+	// Insert adds t unless a row already exists with the same id, the same
+	// (provider, idempotency key), the same (provider, external id) or is the
+	// wallet's OPENING; inserted=false reports that, and callers re-read by
+	// key, then by external id. Inserting a PROCESSED reversal directly is
+	// unsupported: insert PENDING then Update (a reversal-index race then
+	// surfaces as ErrConflict on Update). A FAILED row may be inserted
+	// directly.
 	Insert(ctx context.Context, t *wagering.WagerTransaction) (inserted bool, err error)
 	// Update writes the mutable state of t (status, reference, result, retry).
 	Update(ctx context.Context, t *wagering.WagerTransaction) error
