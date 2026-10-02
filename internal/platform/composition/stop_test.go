@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/brunopstephan/backend-challenge-go/internal/adapters/sqsconsumer"
 	"github.com/brunopstephan/backend-challenge-go/internal/platform/config"
 )
 
@@ -17,8 +18,9 @@ func TestStopTimeoutCoversEnabledComponents(t *testing.T) {
 		RefWorker: config.RefWorker{ShutdownTimeout: 10 * time.Second},
 		Toggles:   config.Toggles{HTTP: true, Consumer: true, Outbox: true, RefWorker: true},
 	}
-	if got := StopTimeout(cfg); got != 65*time.Second {
-		t.Fatalf("all on = %s, want 65s", got)
+	want := 15*time.Second + 20*time.Second + sqsconsumer.AbortGrace + 10*time.Second + 10*time.Second + 10*time.Second
+	if got := StopTimeout(cfg); got != want {
+		t.Fatalf("all on = %s, want %s", got, want)
 	}
 	cfg.Toggles = config.Toggles{HTTP: true}
 	if got := StopTimeout(cfg); got != 25*time.Second {

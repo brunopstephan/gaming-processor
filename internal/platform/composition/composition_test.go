@@ -6,10 +6,13 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"go.uber.org/fx"
+	"go.uber.org/fx/fxevent"
 	"go.uber.org/fx/fxtest"
 
 	"github.com/brunopstephan/backend-challenge-go/internal/adapters/httpapi"
@@ -96,5 +99,49 @@ func TestToggleCombinationsValidate(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+// stopRecorder records the order in which Fx runs OnStop hooks. Fx reports
+// each hook with the function that registered it (CallerName), which names
+// the component without touching production code.
+type stopRecorder struct {
+	mu      sync.Mutex
+	stopped []string
+}
+
+func (r *stopRecorder) LogEvent(ev fxevent.Event) {
+	if e, ok := ev.(*fxevent.OnStopExecuting); ok {
+		r.mu.Lock()
+		r.stopped = append(r.stopped, e.CallerName)
+		r.mu.Unlock()
+	}
+}
+
+func TestHTTPStopsBeforeConsumerAndWorkers(t *testing.T) {
+	cfg := setEnv(t)
+	cfg.Toggles = config.Toggles{HTTP: true, Consumer: true, Outbox: true, RefWorker: true}
+	rec := &stopRecorder{}
+	app := fxtest.New(t, fx.WithLogger(func() fxevent.Logger { return rec }), composition.Modules(cfg))
+	app.RequireStart()
+	app.RequireStop()
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	index := func(part string) []int {
+		var at []int
+		for i, name := range rec.stopped {
+			if strings.Contains(name, part) {
+				at = append(at, i)
+			}
+		}
+		return at
+	}
+	httpAt, consumerAt, workerAt := index("httpapi."), index("sqsconsumer."), index("background.")
+	if len(httpAt) != 1 || len(consumerAt) != 1 || len(workerAt) != 2 {
+		t.Fatalf("stop hooks = %v; want one http, one consumer and two background hooks", rec.stopped)
+	}
+	if httpAt[0] > consumerAt[0] || httpAt[0] > workerAt[0] {
+		t.Fatalf("stop order = %v; HTTP must stop first (spec §13)", rec.stopped)
 	}
 }

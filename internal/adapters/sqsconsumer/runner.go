@@ -3,6 +3,7 @@ package sqsconsumer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -10,8 +11,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
-// abortGrace bounds the wait for workers after their work was canceled.
-const abortGrace = 5 * time.Second
+// AbortGrace bounds the wait for workers after their work was canceled: an
+// in-flight message may take settleTimeout to settle and the poll loop then
+// releases the rest of its batch with another settleTimeout.
+const AbortGrace = 2*settleTimeout + 2*time.Second
 
 // Start launches Settings.Workers goroutines; each long-polls the input
 // queue and handles its batch one message at a time.
@@ -56,12 +59,27 @@ func (c *Consumer) poll() {
 			}
 			continue
 		}
-		for i, msg := range out.Messages {
-			if c.pollCtx.Err() != nil {
-				c.release(out.Messages[i:])
-				break
-			}
-			c.HandleMessage(c.workCtx, msg)
+		c.handleBatch(out.Messages)
+	}
+}
+
+// handleBatch handles msgs in order. Once a message of a FIFO group is left
+// for retry, later messages of that group in the batch are released unprocessed
+// so they cannot overtake it.
+func (c *Consumer) handleBatch(msgs []types.Message) {
+	blocked := map[string]bool{}
+	for i, msg := range msgs {
+		if c.pollCtx.Err() != nil {
+			c.release(msgs[i:])
+			return
+		}
+		group := msg.Attributes[attrGroupID]
+		if group != "" && blocked[group] {
+			c.release(msgs[i : i+1])
+			continue
+		}
+		if !c.HandleMessage(c.workCtx, msg) && group != "" {
+			blocked[group] = true
 		}
 	}
 }
@@ -100,10 +118,14 @@ func (c *Consumer) Stop(ctx context.Context) error {
 	}
 	c.log.Warn("shutdown timeout reached; aborting in-flight messages")
 	abortWork()
+	grace := time.NewTimer(AbortGrace)
+	defer grace.Stop()
 	select {
 	case <-done:
 		return nil
-	case <-time.After(abortGrace):
+	case <-ctx.Done():
+		return fmt.Errorf("sqsconsumer: workers did not stop after abort: %w", ctx.Err())
+	case <-grace.C:
 		return errors.New("sqsconsumer: workers did not stop after abort")
 	}
 }

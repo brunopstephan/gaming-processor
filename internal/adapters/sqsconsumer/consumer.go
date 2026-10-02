@@ -10,6 +10,7 @@ package sqsconsumer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -94,13 +95,28 @@ const (
 )
 
 type decision struct {
-	action action
-	reason string
+	action    action
+	reason    string
+	messageID string // the parsed messageId, when the body got that far
 }
 
-// HandleMessage handles one received message and settles it with SQS.
-func (c *Consumer) HandleMessage(ctx context.Context, msg types.Message) {
-	c.settle(ctx, msg, c.decide(ctx, msg))
+// HandleMessage handles one received message and settles it with SQS. It
+// reports whether the message is finished (deleted or dead-lettered) as
+// opposed to left for a retry; a panic is logged and counts as a retry.
+func (c *Consumer) HandleMessage(ctx context.Context, msg types.Message) (finished bool) {
+	d := c.safeDecide(ctx, msg)
+	return c.settle(ctx, msg, d)
+}
+
+func (c *Consumer) safeDecide(ctx context.Context, msg types.Message) (d decision) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.log.ErrorContext(ctx, "panic while handling message; it will be retried",
+				"sqsMessageId", aws.ToString(msg.MessageId), "panic", fmt.Sprint(r))
+			d = decision{action: actRetry}
+		}
+	}()
+	return c.decide(ctx, msg)
 }
 
 func (c *Consumer) decide(ctx context.Context, msg types.Message) decision {
@@ -108,11 +124,11 @@ func (c *Consumer) decide(ctx context.Context, msg types.Message) decision {
 	provider, known := c.s.SenderProviders[msg.Attributes[attrSenderID]]
 	if !known {
 		log.WarnContext(ctx, "message from an unknown sender", "senderId", msg.Attributes[attrSenderID])
-		return decision{actDeadLetter, string(wagering.FailureProviderIdentityMismatch)}
+		return decision{actDeadLetter, string(wagering.FailureProviderIdentityMismatch), ""}
 	}
 	req, err := parseRequest(aws.ToString(msg.Body))
 	if err != nil {
-		return decision{actDeadLetter, inputCode(err)}
+		return decision{actDeadLetter, inputCode(err), ""}
 	}
 	corr := req.CorrelationID
 	if corr == "" {
@@ -121,18 +137,18 @@ func (c *Consumer) decide(ctx context.Context, msg types.Message) decision {
 	log = log.With("messageId", req.MessageID, "correlationId", corr, "providerId", provider, "walletId", req.Raw.WalletID)
 	if req.Raw.ProviderID != provider {
 		log.WarnContext(ctx, "providerId does not match the sender", "claimedProviderId", req.Raw.ProviderID)
-		return decision{actDeadLetter, string(wagering.FailureProviderIdentityMismatch)}
+		return decision{actDeadLetter, string(wagering.FailureProviderIdentityMismatch), req.MessageID}
 	}
 	cmd, err := wagering.ParseCommand(req.Raw)
 	if err != nil {
-		return decision{actDeadLetter, inputCode(err)}
+		return decision{actDeadLetter, inputCode(err), req.MessageID}
 	}
 	res, err := c.intake.Handle(ctx, req.MessageID, cmd, app.Meta{CorrelationID: corr})
 	switch {
 	case errors.Is(err, app.ErrIdempotencyKeyConflict):
-		return decision{actDeadLetter, "IDEMPOTENCY_KEY_CONFLICT"}
+		return decision{actDeadLetter, "IDEMPOTENCY_KEY_CONFLICT", req.MessageID}
 	case errors.Is(err, app.ErrExternalTransactionConflict):
-		return decision{actDeadLetter, "EXTERNAL_TRANSACTION_CONFLICT"}
+		return decision{actDeadLetter, "EXTERNAL_TRANSACTION_CONFLICT", req.MessageID}
 	case err != nil:
 		log.WarnContext(ctx, "message will be retried", "error", err.Error(), "transient", errors.Is(err, app.ErrTransient))
 		return decision{action: actRetry}
@@ -141,14 +157,14 @@ func (c *Consumer) decide(ctx context.Context, msg types.Message) decision {
 	case res.Outcome == app.IntakeDuplicate:
 		if res.Transaction != nil && res.Transaction.Status() == wagering.StatusFailed {
 			// A redelivery after a FAILED commit whose dead-lettering did not complete.
-			return decision{actDeadLetter, string(wagering.FailureInfrastructure)}
+			return decision{actDeadLetter, string(wagering.FailureInfrastructure), req.MessageID}
 		}
 		log.InfoContext(ctx, "duplicate message dropped")
 		return decision{action: actDelete}
 	case res.Outcome == app.IntakeMessageReused:
-		return decision{actDeadLetter, string(wagering.FailureMessageIDReused)}
+		return decision{actDeadLetter, string(wagering.FailureMessageIDReused), req.MessageID}
 	case res.Transaction.Status() == wagering.StatusFailed:
-		return decision{actDeadLetter, string(wagering.FailureInfrastructure)}
+		return decision{actDeadLetter, string(wagering.FailureInfrastructure), req.MessageID}
 	}
 	return decision{action: actDelete}
 }
@@ -161,10 +177,11 @@ func inputCode(err error) string {
 	return string(wagering.FailureMalformedPayload)
 }
 
-// settle applies d. It runs even if ctx was canceled after the commit, so a
-// committed message is still deleted; a retry of canceled work releases the
-// message at once instead of backing off.
-func (c *Consumer) settle(ctx context.Context, msg types.Message, d decision) {
+// settle applies d and reports whether the message is finished (deleted or
+// dead-lettered) rather than left for retry. It runs even if ctx was canceled
+// after the commit, so a committed message is still deleted; a retry of
+// canceled work releases the message at once instead of backing off.
+func (c *Consumer) settle(ctx context.Context, msg types.Message, d decision) bool {
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
 	defer cancel()
 	switch d.action {
@@ -173,19 +190,23 @@ func (c *Consumer) settle(ctx context.Context, msg types.Message, d decision) {
 			c.log.ErrorContext(sctx, "dead-letter failed; message will be retried",
 				"sqsMessageId", aws.ToString(msg.MessageId), "reason", d.reason, "error", err.Error())
 			c.retry(sctx, msg, c.backoff(msg))
-			return
+			return false
 		}
+		c.log.WarnContext(sctx, "message dead-lettered", "sqsMessageId", aws.ToString(msg.MessageId),
+			"messageId", d.messageID, "reason", d.reason)
 		c.metrics.SQSDeadLetter(d.reason)
-		c.delete(sctx, msg)
+		c.delete(sctx, msg, "the redelivery will be dead-lettered again and deduplicated by SQS within 5 minutes")
 	case actRetry:
 		delay := c.backoff(msg)
 		if ctx.Err() != nil {
 			delay = 0
 		}
 		c.retry(sctx, msg, delay)
+		return false
 	default:
-		c.delete(sctx, msg)
+		c.delete(sctx, msg, "the redelivery will be dropped by the inbox")
 	}
+	return true
 }
 
 func (c *Consumer) deadLetter(ctx context.Context, msg types.Message, reason string) error {
@@ -198,16 +219,17 @@ func (c *Consumer) deadLetter(ctx context.Context, msg types.Message, reason str
 		MessageGroupId: aws.String(group), MessageDeduplicationId: msg.MessageId,
 		MessageAttributes: map[string]types.MessageAttributeValue{
 			"failureReason": {DataType: aws.String("String"), StringValue: aws.String(reason)},
+			"senderId":      {DataType: aws.String("String"), StringValue: aws.String(msg.Attributes[attrSenderID])},
 		},
 	})
 	return err
 }
 
-func (c *Consumer) delete(ctx context.Context, msg types.Message) {
+func (c *Consumer) delete(ctx context.Context, msg types.Message, consequence string) {
 	if _, err := c.api.DeleteMessage(ctx, &sqs.DeleteMessageInput{
 		QueueUrl: aws.String(c.s.InputURL), ReceiptHandle: msg.ReceiptHandle,
 	}); err != nil {
-		c.log.WarnContext(ctx, "delete failed; the redelivery will be dropped by the inbox",
+		c.log.WarnContext(ctx, "delete failed; "+consequence,
 			"sqsMessageId", aws.ToString(msg.MessageId), "error", err.Error())
 	}
 }

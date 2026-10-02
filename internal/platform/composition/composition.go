@@ -25,14 +25,12 @@ import (
 // stopMargin leaves room, after every drain, to close SQS and PostgreSQL.
 const stopMargin = 10 * time.Second
 
-// Modules returns the application graph for cfg. Fx starts modules in
-// dependency order and stops them in reverse: the HTTP server, the consumer
-// and the background workers drain before the database pool closes.
+// Modules returns the application graph for cfg. Fx runs OnStop hooks in the
+// reverse of construction order: the HTTP server (constructed last) stops
+// first, then the workers and the consumer drain, and the database pool
+// closes last.
 func Modules(cfg config.Config) fx.Option {
 	opts := []fx.Option{fx.Supply(cfg), logging.Module, metrics.Module, postgres.Module, app.Module}
-	if cfg.Toggles.HTTP {
-		opts = append(opts, auth.Module, httpapi.Module)
-	}
 	if cfg.Toggles.Consumer || cfg.Toggles.Outbox {
 		opts = append(opts, awssqs.Module)
 	}
@@ -45,6 +43,11 @@ func Modules(cfg config.Config) fx.Option {
 	if cfg.Toggles.RefWorker {
 		opts = append(opts, workers.ReferenceModule)
 	}
+	// Last, so the server is constructed last and its OnStop runs first: HTTP
+	// stops accepting (readiness draining) before the consumer and workers drain.
+	if cfg.Toggles.HTTP {
+		opts = append(opts, auth.Module, httpapi.Module)
+	}
 	return fx.Options(opts...)
 }
 
@@ -56,7 +59,7 @@ func StopTimeout(cfg config.Config) time.Duration {
 		d += cfg.HTTP.ShutdownTimeout
 	}
 	if cfg.Toggles.Consumer {
-		d += cfg.SQS.ShutdownTimeout
+		d += cfg.SQS.ShutdownTimeout + sqsconsumer.AbortGrace
 	}
 	if cfg.Toggles.Outbox {
 		d += cfg.Outbox.ShutdownTimeout

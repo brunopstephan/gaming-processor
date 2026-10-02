@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/google/uuid"
 
 	"github.com/brunopstephan/backend-challenge-go/internal/app"
@@ -159,5 +160,60 @@ func TestStopWaitsForInFlightWork(t *testing.T) {
 	}
 	if msgs := sqstest.Receive(t, owner, q.Input.URL, 3*time.Second); len(msgs) != 0 {
 		t.Fatalf("completed message was not deleted: %v", aws.ToString(msgs[0].Body))
+	}
+}
+
+// countingIntake counts calls and blocks every one until its context ends.
+type countingIntake struct {
+	entered chan struct{}
+	once    sync.Once
+	calls   atomic.Int32
+}
+
+func (b *countingIntake) Handle(ctx context.Context, _ string, _ wagering.Command, _ app.Meta) (app.IntakeResult, error) {
+	b.calls.Add(1)
+	b.once.Do(func() { close(b.entered) })
+	<-ctx.Done()
+	return app.IntakeResult{}, app.ErrTransient
+}
+
+// TestStopReleasesReceivedButUnstartedMessages: one worker receives both
+// messages (different groups) in a single batch and blocks on the first; Stop
+// must release the second without ever handling it.
+func TestStopReleasesReceivedButUnstartedMessages(t *testing.T) {
+	h := apptest.New(t)
+	q := sqstest.NewQueues(t, sqstest.Options{})
+	intake := &countingIntake{entered: make(chan struct{})}
+	s := runSettings(q)
+	s.Workers, s.MaxMessages, s.ShutdownTimeout = 1, 10, 500*time.Millisecond
+	owner := sqstest.Owner(t)
+	c := New(owner, intake, &fakeMetrics{}, slog.New(slog.DiscardHandler), s)
+
+	w := h.OpenWallet(t, "10.00")
+	providerA := sqstest.Client(t, sqstest.ProviderAAccount)
+	for _, group := range []string{"g1", "g2"} {
+		sqstest.Send(t, providerA, q.Input.URL, body("msg-"+uuid.NewString(), "provider-a", w, "BET", "1.00", uuid.NewString(), ""), group)
+	}
+	c.Start()
+	select {
+	case <-intake.entered:
+	case <-time.After(15 * time.Second):
+		t.Fatal("message never reached the intake")
+	}
+	if err := c.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := intake.calls.Load(); n != 1 {
+		t.Fatalf("intake calls = %d, the unstarted message must not be handled", n)
+	}
+	var got []types.Message
+	eventually(t, 5*time.Second, func() bool {
+		got = append(got, sqstest.Receive(t, owner, q.Input.URL, time.Second)...)
+		return len(got) >= 2
+	}, "both messages visible again at once")
+	for _, m := range got {
+		if m.Attributes["ApproximateReceiveCount"] != "2" {
+			t.Fatalf("message %s receive count = %s, want 2 (one batch receive, one after the release)", aws.ToString(m.MessageId), m.Attributes["ApproximateReceiveCount"])
+		}
 	}
 }

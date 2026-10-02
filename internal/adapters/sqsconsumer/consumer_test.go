@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -262,6 +263,8 @@ func TestHandleDeadLetters(t *testing.T) {
 		{"numeric amount", providerA, `{"messageId":"m","type":"WagerTransactionRequested","occurredAt":"2026-09-08T12:00:00Z","data":{"money":{"amount":5}}}`, "INVALID_MONEY"},
 		{"opening", providerA, body("msg-"+uuid.NewString(), "provider-a", w, "OPENING", "5.00", uuid.NewString(), ""), "KIND_NOT_ALLOWED"},
 		{"reused message id", providerA, body(reusedID, "provider-a", w, "BET", "2.00", uuid.NewString(), ""), "MESSAGE_ID_REUSED"},
+		{"external transaction conflict", providerA, strings.ReplaceAll(body("msg-"+uuid.NewString(), "provider-a", w, "BET", "1.00", conflictExt, ""),
+			`"idempotencyKey":"provider-a:`+conflictExt, `"idempotencyKey":"provider-a:other-`+conflictExt), "EXTERNAL_TRANSACTION_CONFLICT"},
 		{"key conflict", providerA, body("msg-"+uuid.NewString(), "provider-a", w, "BET", "9.00", conflictExt, ""), "IDEMPOTENCY_KEY_CONFLICT"},
 	}
 	for _, tc := range cases {
@@ -271,6 +274,9 @@ func TestHandleDeadLetters(t *testing.T) {
 			dead := sqstest.Receive(t, f.owner, f.q.InputDLQ.URL, 10*time.Second)
 			if len(dead) != 1 || aws.ToString(dead[0].Body) != tc.body || sqstest.FailureReason(dead[0]) != tc.reason {
 				t.Fatalf("dlq = %+v, want the original body with failureReason %s", dead, tc.reason)
+			}
+			if got := aws.ToString(dead[0].MessageAttributes["senderId"].StringValue); got == "" {
+				t.Fatalf("dlq copy has no senderId attribute: %+v", dead[0].MessageAttributes)
 			}
 			if got := dead[0].Attributes["MessageGroupId"]; got != "group-1" {
 				t.Fatalf("dlq MessageGroupId = %q, want the original group-1", got)
