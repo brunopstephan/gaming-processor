@@ -89,11 +89,33 @@ func TestRealTokensAuthenticationMatrix(t *testing.T) {
 			api.noRow(t, "provider-a", "provider-a:"+ext)
 		})
 	}
-	if rec := api.Do("POST", "/wallets", providerA, `{"playerId":"`+uuid.NewString()+`","initialBalance":{"amount":"1.00","currency":"BRL"}}`); rec.Code != 403 {
+	intruder := uuid.NewString()
+	if rec := api.Do("POST", "/wallets", providerA, `{"playerId":"`+intruder+`","initialBalance":{"amount":"1.00","currency":"BRL"}}`); rec.Code != 403 {
 		t.Fatalf("providers cannot open wallets = %d", rec.Code)
 	}
-	if rec := api.Do("GET", "/wallets/"+w.id, internal, ""); decode(t, rec)["balance"].(map[string]any)["amount"] != "100.00" {
-		t.Fatal("denied requests must not move money")
+	var created int64
+	if err := api.H.DB.Raw("SELECT count(*) FROM wallets WHERE player_id = ?", intruder).Scan(&created).Error; err != nil {
+		t.Fatal(err)
+	}
+	if created != 0 {
+		t.Fatalf("a denied wallet creation must leave no wallet, found %d", created)
+	}
+	api.requireBalance(t, internal, w.id, "100.00", "denied requests must not move money")
+}
+
+// requireBalance reads the wallet as the internal client and checks its balance amount.
+func (a *apiHarness) requireBalance(t *testing.T, token, walletID, want, msg string) {
+	t.Helper()
+	rec := a.Do("GET", "/wallets/"+walletID, token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s: read wallet = %d %s", msg, rec.Code, rec.Body)
+	}
+	bal, ok := decode(t, rec)["balance"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s: no balance object in %s", msg, rec.Body)
+	}
+	if bal["amount"] != want {
+		t.Fatalf("%s: balance %v, want %s", msg, bal["amount"], want)
 	}
 }
 
@@ -124,10 +146,9 @@ func TestRealTokensProviderIsolation(t *testing.T) {
 		"Idempotency-Key", "provider-a:"+ext); r.Code != 403 {
 		t.Fatalf("provider-b replaying provider-a = %d, want 403", r.Code)
 	}
+	api.noRow(t, "provider-b", "provider-a:"+ext)
 	if r := api.Do("GET", "/wagering/transactions/"+id, internal, ""); r.Code != 200 {
 		t.Fatalf("internal reads any transaction = %d", r.Code)
 	}
-	if r := api.Do("GET", "/wallets/"+w.id, internal, ""); decode(t, r)["balance"].(map[string]any)["amount"] != "90.00" {
-		t.Fatal("only provider-a's bet may have moved the wallet")
-	}
+	api.requireBalance(t, internal, w.id, "90.00", "only provider-a's bet may have moved the wallet")
 }
