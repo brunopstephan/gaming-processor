@@ -17,10 +17,10 @@ import (
 )
 
 // expectedTables grows as later tasks add migrations.
-var expectedTables = []string{"wallets", "wager_transactions"}
+var expectedTables = []string{"wallets", "wager_transactions", "wallet_ledger_entries"}
 
 // expectedVersion is the latest migration number.
-const expectedVersion = 2
+const expectedVersion = 3
 
 func publicTables(t *testing.T, url string) []string {
 	t.Helper()
