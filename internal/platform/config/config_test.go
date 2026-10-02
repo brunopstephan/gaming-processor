@@ -4,6 +4,7 @@ package config
 
 import (
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -131,5 +132,58 @@ func TestLoadInvalidLogLevelAndTimeout(t *testing.T) {
 	_, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x", "LOG_LEVEL": "loud", "HTTP_SHUTDOWN_TIMEOUT": "0s"}))
 	if err == nil || !strings.Contains(err.Error(), "LOG_LEVEL") || !strings.Contains(err.Error(), "HTTP_SHUTDOWN_TIMEOUT") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestLoadMessagingDefaults(t *testing.T) {
+	cfg, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSQS := SQS{
+		Region: "us-east-1", InputQueue: "wager-transactions.fifo", InputDLQ: "wager-transactions-dlq.fifo",
+		EventsQueue: "wallet-events.fifo", Workers: 4, WaitTime: 20 * time.Second, MaxMessages: 10,
+		RetryBaseDelay: 2 * time.Second, RetryMaxDelay: 5 * time.Minute, ShutdownTimeout: 20 * time.Second,
+		SenderProviders: map[string]string{"111111111111": "provider-a", "222222222222": "provider-b"},
+	}
+	if !reflect.DeepEqual(cfg.SQS, wantSQS) {
+		t.Fatalf("SQS = %+v\nwant %+v", cfg.SQS, wantSQS)
+	}
+	if cfg.Toggles != (Toggles{HTTP: true, Consumer: true, Outbox: true, RefWorker: true}) {
+		t.Fatalf("Toggles = %+v", cfg.Toggles)
+	}
+	wantOutbox := Outbox{PollInterval: 500 * time.Millisecond, BatchSize: 50, Lease: 30 * time.Second,
+		RetryBaseDelay: time.Second, RetryMaxDelay: 5 * time.Minute, ShutdownTimeout: 10 * time.Second}
+	if cfg.Outbox != wantOutbox || cfg.RefWorker != (RefWorker{PollInterval: time.Second, ShutdownTimeout: 10 * time.Second}) {
+		t.Fatalf("Outbox %+v RefWorker %+v", cfg.Outbox, cfg.RefWorker)
+	}
+}
+
+func TestLoadMessagingOverrides(t *testing.T) {
+	cfg, err := Load(env(map[string]string{
+		"DATABASE_URL": "postgres://x", "SQS_ENDPOINT": "http://localhost:4566", "SQS_CONSUMER_PROFILE": "wallet-consumer",
+		"SQS_SENDER_PROVIDER_MAP": " 333333333333 = provider-c ", "HTTP_ENABLED": "false", "CONSUMER_ENABLED": "0",
+		"SQS_WAIT_TIME": "1s", "SQS_MAX_MESSAGES": "3",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SQS.Endpoint != "http://localhost:4566" || cfg.SQS.ConsumerProfile != "wallet-consumer" ||
+		!reflect.DeepEqual(cfg.SQS.SenderProviders, map[string]string{"333333333333": "provider-c"}) ||
+		cfg.Toggles.HTTP || cfg.Toggles.Consumer || !cfg.Toggles.Outbox || cfg.SQS.WaitTime != time.Second || cfg.SQS.MaxMessages != 3 {
+		t.Fatalf("cfg = %+v", cfg)
+	}
+}
+
+func TestLoadMessagingInvalid(t *testing.T) {
+	_, err := Load(env(map[string]string{
+		"DATABASE_URL": "postgres://x", "SQS_SENDER_PROVIDER_MAP": "broken", "OUTBOX_ENABLED": "maybe",
+		"SQS_WAIT_TIME": "30s", "SQS_MAX_MESSAGES": "11", "SQS_RETRY_MAX_DELAY": "1s",
+		"OUTBOX_RETRY_MAX_DELAY": "1ms",
+	}))
+	for _, key := range []string{"SQS_SENDER_PROVIDER_MAP", "OUTBOX_ENABLED", "SQS_WAIT_TIME", "SQS_MAX_MESSAGES", "SQS_RETRY_MAX_DELAY", "OUTBOX_RETRY_MAX_DELAY"} {
+		if err == nil || !strings.Contains(err.Error(), key) {
+			t.Errorf("error %v does not mention %s", err, key)
+		}
 	}
 }

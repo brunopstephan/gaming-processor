@@ -13,11 +13,15 @@ import (
 
 // Config is the whole service configuration. Later plans add sections.
 type Config struct {
-	Database Database
-	Wagering Wagering
-	HTTP     HTTP
-	Auth     Auth
-	Log      Log
+	Database  Database
+	Wagering  Wagering
+	HTTP      HTTP
+	Auth      Auth
+	Log       Log
+	SQS       SQS
+	Toggles   Toggles
+	Outbox    Outbox
+	RefWorker RefWorker
 }
 
 // Wagering configures how PENDING_REFERENCE operations wait for their reference.
@@ -70,10 +74,57 @@ func Load(getenv func(string) string) (Config, error) {
 		authCfg.JWKSURL = strings.TrimRight(authCfg.IssuerURL, "/") + "/protocol/openid-connect/certs"
 	}
 	logCfg := Log{Level: logLevel(getenv, &errs)}
+	sqsCfg := SQS{
+		Endpoint:         getenv("SQS_ENDPOINT"),
+		Region:           envOr(getenv, "AWS_REGION", "us-east-1"),
+		ConsumerProfile:  getenv("SQS_CONSUMER_PROFILE"),
+		PublisherProfile: getenv("SQS_PUBLISHER_PROFILE"),
+		InputQueue:       envOr(getenv, "SQS_INPUT_QUEUE", "wager-transactions.fifo"),
+		InputDLQ:         envOr(getenv, "SQS_INPUT_DLQ", "wager-transactions-dlq.fifo"),
+		EventsQueue:      envOr(getenv, "SQS_EVENTS_QUEUE", "wallet-events.fifo"),
+		Workers:          positiveInt(getenv, "SQS_CONSUMER_WORKERS", 4, &errs),
+		WaitTime:         positiveDuration(getenv, "SQS_WAIT_TIME", 20*time.Second, &errs),
+		MaxMessages:      positiveInt(getenv, "SQS_MAX_MESSAGES", 10, &errs),
+		RetryBaseDelay:   positiveDuration(getenv, "SQS_RETRY_BASE_DELAY", 2*time.Second, &errs),
+		RetryMaxDelay:    positiveDuration(getenv, "SQS_RETRY_MAX_DELAY", 5*time.Minute, &errs),
+		ShutdownTimeout:  positiveDuration(getenv, "SQS_SHUTDOWN_TIMEOUT", 20*time.Second, &errs),
+		SenderProviders:  senderProviders(getenv, &errs),
+	}
+	if sqsCfg.WaitTime < time.Second || sqsCfg.WaitTime > 20*time.Second {
+		errs = append(errs, fmt.Errorf("SQS_WAIT_TIME must be between 1s and 20s, got %s", sqsCfg.WaitTime))
+	}
+	if sqsCfg.MaxMessages > 10 {
+		errs = append(errs, fmt.Errorf("SQS_MAX_MESSAGES must be between 1 and 10, got %d", sqsCfg.MaxMessages))
+	}
+	if sqsCfg.RetryMaxDelay < sqsCfg.RetryBaseDelay || sqsCfg.RetryMaxDelay > 12*time.Hour {
+		errs = append(errs, fmt.Errorf("SQS_RETRY_MAX_DELAY must be >= SQS_RETRY_BASE_DELAY and <= 12h, got %s", sqsCfg.RetryMaxDelay))
+	}
+	toggles := Toggles{
+		HTTP:      boolEnv(getenv, "HTTP_ENABLED", &errs),
+		Consumer:  boolEnv(getenv, "CONSUMER_ENABLED", &errs),
+		Outbox:    boolEnv(getenv, "OUTBOX_ENABLED", &errs),
+		RefWorker: boolEnv(getenv, "REFWORKER_ENABLED", &errs),
+	}
+	outbox := Outbox{
+		PollInterval:    positiveDuration(getenv, "OUTBOX_POLL_INTERVAL", 500*time.Millisecond, &errs),
+		BatchSize:       positiveInt(getenv, "OUTBOX_BATCH_SIZE", 50, &errs),
+		Lease:           positiveDuration(getenv, "OUTBOX_LEASE", 30*time.Second, &errs),
+		RetryBaseDelay:  positiveDuration(getenv, "OUTBOX_RETRY_BASE_DELAY", time.Second, &errs),
+		RetryMaxDelay:   positiveDuration(getenv, "OUTBOX_RETRY_MAX_DELAY", 5*time.Minute, &errs),
+		ShutdownTimeout: positiveDuration(getenv, "OUTBOX_SHUTDOWN_TIMEOUT", 10*time.Second, &errs),
+	}
+	if outbox.RetryMaxDelay < outbox.RetryBaseDelay {
+		errs = append(errs, fmt.Errorf("OUTBOX_RETRY_MAX_DELAY (%s) must be >= OUTBOX_RETRY_BASE_DELAY (%s)", outbox.RetryMaxDelay, outbox.RetryBaseDelay))
+	}
+	refWorker := RefWorker{
+		PollInterval:    positiveDuration(getenv, "REFWORKER_POLL_INTERVAL", time.Second, &errs),
+		ShutdownTimeout: positiveDuration(getenv, "REFWORKER_SHUTDOWN_TIMEOUT", 10*time.Second, &errs),
+	}
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("config: %w", errors.Join(errs...))
 	}
-	return Config{Database: db, Wagering: wagering, HTTP: httpCfg, Auth: authCfg, Log: logCfg}, nil
+	return Config{Database: db, Wagering: wagering, HTTP: httpCfg, Auth: authCfg, Log: logCfg,
+		SQS: sqsCfg, Toggles: toggles, Outbox: outbox, RefWorker: refWorker}, nil
 }
 
 func positiveInt(getenv func(string) string, key string, fallback int, errs *[]error) int {
@@ -143,4 +194,77 @@ func logLevel(getenv func(string) string, errs *[]error) slog.Level {
 		*errs = append(*errs, fmt.Errorf("LOG_LEVEL must be debug, info, warn or error, got %q", getenv("LOG_LEVEL")))
 		return slog.LevelInfo
 	}
+}
+
+// SQS configures the SQS clients and the input consumer. Profiles name
+// entries of the AWS shared credentials file (AWS_SHARED_CREDENTIALS_FILE);
+// empty means the SDK's default credential chain.
+type SQS struct {
+	Endpoint         string
+	Region           string
+	ConsumerProfile  string
+	PublisherProfile string
+	InputQueue       string
+	InputDLQ         string
+	EventsQueue      string
+	Workers          int
+	WaitTime         time.Duration
+	MaxMessages      int
+	RetryBaseDelay   time.Duration
+	RetryMaxDelay    time.Duration
+	ShutdownTimeout  time.Duration
+	// SenderProviders maps the SQS SenderId (the sending account) to the providerId it represents.
+	SenderProviders map[string]string
+}
+
+// Toggles turn process components on or off (tests and dedicated workers).
+type Toggles struct {
+	HTTP      bool
+	Consumer  bool
+	Outbox    bool
+	RefWorker bool
+}
+
+// Outbox configures the outbox relay.
+type Outbox struct {
+	PollInterval    time.Duration
+	BatchSize       int
+	Lease           time.Duration
+	RetryBaseDelay  time.Duration
+	RetryMaxDelay   time.Duration
+	ShutdownTimeout time.Duration
+}
+
+// RefWorker configures the PENDING_REFERENCE worker.
+type RefWorker struct {
+	PollInterval    time.Duration
+	ShutdownTimeout time.Duration
+}
+
+func boolEnv(getenv func(string) string, key string, errs *[]error) bool {
+	switch strings.ToLower(strings.TrimSpace(getenv(key))) {
+	case "", "true", "1":
+		return true
+	case "false", "0":
+		return false
+	default:
+		*errs = append(*errs, fmt.Errorf("%s must be true, false, 1 or 0, got %q", key, getenv(key)))
+		return true
+	}
+}
+
+// senderProviders parses "account=provider,account=provider".
+func senderProviders(getenv func(string) string, errs *[]error) map[string]string {
+	raw := envOr(getenv, "SQS_SENDER_PROVIDER_MAP", "111111111111=provider-a,222222222222=provider-b")
+	out := map[string]string{}
+	for _, pair := range strings.Split(raw, ",") {
+		sender, provider, ok := strings.Cut(pair, "=")
+		sender, provider = strings.TrimSpace(sender), strings.TrimSpace(provider)
+		if !ok || sender == "" || provider == "" {
+			*errs = append(*errs, fmt.Errorf("SQS_SENDER_PROVIDER_MAP entry %q must be sender=provider", pair))
+			continue
+		}
+		out[sender] = provider
+	}
+	return out
 }
