@@ -467,6 +467,5 @@ O enunciado deixa lacunas; estas são as decisões tomadas:
 - **Drenagem invisível ao balanceador:** não há pré-parada com atraso; a segurança vem das tentativas do nginx e da
   idempotência.
 - **Fora do escopo:** testes de carga e tracing (OpenTelemetry), que eram opcionais no enunciado, e partidas dobradas.
-- **Itens menores conhecidos nos testes e scripts:** os scripts de `scripts/` falham de forma enxuta (sem corpo de
-  erro) e seus padrões ignoram `KEYCLOAK_PORT` e `WALLET_PORT` (use `KEYCLOAK_URL` e `WALLET_URL`); o E2E não prova a
+- **Itens menores conhecidos nos testes:** o E2E não prova a
   sobreposição das requisições no cenário 1 e pode deixar processos órfãos se o binário de teste for morto.

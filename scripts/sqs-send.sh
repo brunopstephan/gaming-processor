@@ -4,6 +4,7 @@
 # Usage: scripts/sqs-send.sh PROFILE MESSAGE_GROUP_ID 'JSON BODY'
 # The body's messageId is used as MessageDeduplicationId (producer contract).
 set -euo pipefail
+cd "$(dirname "$0")/.."
 profile=${1:?profile} group=${2:?group} body=${3:?body}
 dedup=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["messageId"])' "$body")
 docker compose run --rm --no-deps -T \

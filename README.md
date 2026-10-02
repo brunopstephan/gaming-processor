@@ -13,6 +13,8 @@ nginx, com Keycloak (OIDC), PostgreSQL, SQS (MiniStack), Prometheus e Grafana.
 
 - Docker com Compose v2.
 - Go 1.25.11 ou superior (para rodar os testes e compilar fora do Docker).
+- Um compilador C (gcc ou clang): os testes E2E compilam o binário com `-race`, que exige cgo. Já vem no macOS; no
+  Linux instale `build-essential`.
 - `curl` e `python3`, só para os scripts em `scripts/` e os exemplos abaixo.
 
 ## Subir tudo
@@ -27,7 +29,7 @@ políticas e os usuários IAM, e termina), três réplicas de `wallet`, `nginx`,
 
 | Serviço | Endereço no host | Observação |
 | --- | --- | --- |
-| API (nginx, balanceia as 3 réplicas) | http://localhost:8000 | `WALLET_PORT` |
+| API (nginx, balanceia as 3 réplicas) | http://localhost:8000 | `WALLET_PORT`; `/metrics` não é exposto pelo nginx (só por réplica, via Prometheus) |
 | Keycloak | http://localhost:8080 | admin: `admin` / `admin` |
 | MiniStack (SQS, IAM) | http://localhost:4566 | |
 | Prometheus | http://localhost:9090 | |
