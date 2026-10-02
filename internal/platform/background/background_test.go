@@ -70,3 +70,30 @@ func TestStopReportsAStuckJob(t *testing.T) {
 		t.Fatal("a job that ignores cancellation must make Stop fail after the timeout")
 	}
 }
+
+func TestPanickingJobDoesNotKillTheLoop(t *testing.T) {
+	calls := make(chan int, 16)
+	var n atomic.Int32
+	loop := NewLoop("test", 10*time.Millisecond, func(context.Context) (bool, error) {
+		c := int(n.Add(1))
+		calls <- c
+		if c == 1 {
+			panic("boom")
+		}
+		return false, nil
+	}, slog.New(slog.DiscardHandler))
+	loop.Start()
+	for want := 1; want <= 2; want++ {
+		select {
+		case got := <-calls:
+			if got != want {
+				t.Fatalf("call %d, want %d", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("job run %d never happened: the loop died after the panic", want)
+		}
+	}
+	if err := loop.Stop(context.Background(), time.Second); err != nil {
+		t.Fatalf("stop after a panic = %v", err)
+	}
+}

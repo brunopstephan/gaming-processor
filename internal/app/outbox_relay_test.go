@@ -208,6 +208,58 @@ func TestPublishFailureIsRescheduled(t *testing.T) {
 	}
 }
 
+// hungPublisher blocks until its context ends, like a stalled SQS call, and
+// records the deadline it was given.
+type hungPublisher struct {
+	mu        sync.Mutex
+	remaining []time.Duration
+	noLimit   bool
+}
+
+func (p *hungPublisher) Publish(ctx context.Context, _ app.OutboxEvent) error {
+	p.mu.Lock()
+	if d, ok := ctx.Deadline(); ok {
+		p.remaining = append(p.remaining, time.Until(d))
+	} else {
+		p.noLimit = true
+		p.mu.Unlock()
+		return errors.New("publish ran without a deadline")
+	}
+	p.mu.Unlock()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestHungPublishIsCutOffWithinHalfTheLease(t *testing.T) {
+	h := apptest.NewIsolated(t)
+	ids := produce(t, h, 1)
+	lease := 2 * time.Second
+	pub := &hungPublisher{}
+	relay := newRelay(t, h, pub, "relay-a", lease)
+	start := time.Now()
+	if _, err := relay.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pub.mu.Lock()
+	defer pub.mu.Unlock()
+	if pub.noLimit || len(pub.remaining) != len(ids) {
+		t.Fatalf("publishes %d (no deadline: %v), want %d, each with a deadline", len(pub.remaining), pub.noLimit, len(ids))
+	}
+	for _, d := range pub.remaining {
+		if d > lease/2 {
+			t.Fatalf("publish deadline %s exceeds half the %s lease", d, lease)
+		}
+	}
+	if took := time.Since(start); took > time.Duration(len(ids))*(lease/2)+time.Second {
+		t.Fatalf("RunOnce took %s, hung publishes must each be cut off after %s", took, lease/2)
+	}
+	for _, id := range ids {
+		if s := stateOf(t, h, id); s.PublishedAt != nil || s.Attempts != 1 || s.LockedBy != nil {
+			t.Fatalf("state after a timed-out publish = %+v, want rescheduled and unpublished", s)
+		}
+	}
+}
+
 // claimOnly simulates a relay that crashes after publishing, before marking.
 type claimOnly struct{ app.OutboxRelayRepository }
 

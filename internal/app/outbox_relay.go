@@ -61,7 +61,10 @@ func (r *OutboxRelay) RunOnce(ctx context.Context) (int, error) {
 
 func (r *OutboxRelay) publish(ctx context.Context, e OutboxEvent) {
 	log := r.log.With("eventId", e.ID.String(), "eventType", e.EventType, "walletId", e.AggregateID.String(), "attempts", e.Attempts)
-	if err := r.pub.Publish(ctx, e); err != nil {
+	// A hung publish must not outlive the lease another relay could take over.
+	pctx, cancel := context.WithTimeout(ctx, r.s.Lease/2)
+	defer cancel()
+	if err := r.pub.Publish(pctx, e); err != nil {
 		r.metrics.OutboxPublishAttempt(OutboxFailed)
 		delay := backoff(e.Attempts, r.s.RetryBaseDelay, r.s.RetryMaxDelay)
 		log.WarnContext(ctx, "publish failed; rescheduled", "error", err.Error(), "retryIn", delay.String())

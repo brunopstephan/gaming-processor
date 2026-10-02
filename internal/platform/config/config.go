@@ -96,6 +96,9 @@ func Load(getenv func(string) string) (Config, error) {
 	if sqsCfg.MaxMessages > 10 {
 		errs = append(errs, fmt.Errorf("SQS_MAX_MESSAGES must be between 1 and 10, got %d", sqsCfg.MaxMessages))
 	}
+	if sqsCfg.RetryBaseDelay < time.Second {
+		errs = append(errs, fmt.Errorf("SQS_RETRY_BASE_DELAY must be at least 1s (visibility timeouts are whole seconds), got %s", sqsCfg.RetryBaseDelay))
+	}
 	if sqsCfg.RetryMaxDelay < sqsCfg.RetryBaseDelay || sqsCfg.RetryMaxDelay > 12*time.Hour {
 		errs = append(errs, fmt.Errorf("SQS_RETRY_MAX_DELAY must be >= SQS_RETRY_BASE_DELAY and <= 12h, got %s", sqsCfg.RetryMaxDelay))
 	}
@@ -253,6 +256,10 @@ func boolEnv(getenv func(string) string, key string, errs *[]error) bool {
 	}
 }
 
+// maxProviderIDBytes bounds a mapped providerId: the inbox consumer name is
+// "wager-transactions/<providerId>" and consumer_name is varchar(100).
+const maxProviderIDBytes = 64
+
 // senderProviders parses "account=provider,account=provider".
 func senderProviders(getenv func(string) string, errs *[]error) map[string]string {
 	raw := envOr(getenv, "SQS_SENDER_PROVIDER_MAP", "111111111111=provider-a,222222222222=provider-b")
@@ -262,6 +269,10 @@ func senderProviders(getenv func(string) string, errs *[]error) map[string]strin
 		sender, provider = strings.TrimSpace(sender), strings.TrimSpace(provider)
 		if !ok || sender == "" || provider == "" {
 			*errs = append(*errs, fmt.Errorf("SQS_SENDER_PROVIDER_MAP entry %q must be sender=provider", pair))
+			continue
+		}
+		if len(provider) > maxProviderIDBytes {
+			*errs = append(*errs, fmt.Errorf("SQS_SENDER_PROVIDER_MAP provider %q is longer than %d bytes", provider, maxProviderIDBytes))
 			continue
 		}
 		out[sender] = provider

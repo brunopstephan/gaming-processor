@@ -137,7 +137,7 @@ func TestHandleProcessesAndDeletes(t *testing.T) {
 	if f.balance(t, w) != "75.00" {
 		t.Fatalf("balance = %s", f.balance(t, w))
 	}
-	if _, err := h.Inbox.Get(context.Background(), app.ConsumerWagerTransactions, msgID); err != nil {
+	if _, err := h.Inbox.Get(context.Background(), app.ConsumerWagerTransactions+"/provider-a", msgID); err != nil {
 		t.Fatalf("inbox: %v", err)
 	}
 }

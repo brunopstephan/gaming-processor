@@ -10,8 +10,13 @@ import (
 	"github.com/brunopstephan/backend-challenge-go/internal/domain/wagering"
 )
 
-// ConsumerWagerTransactions is the inbox consumer name of the input queue.
+// ConsumerWagerTransactions is the prefix of the inbox consumer name of the
+// input queue; the full name appends "/" and the providerId, so a messageId is
+// unique per provider (consumer_name is varchar(100); providerId is capped at
+// 64 bytes by the configuration).
 const ConsumerWagerTransactions = "wager-transactions"
+
+func inboxConsumer(provider string) string { return ConsumerWagerTransactions + "/" + provider }
 
 // IntakeOutcome says how a message was handled.
 type IntakeOutcome string
@@ -83,7 +88,7 @@ func (s *IntakeService) Handle(ctx context.Context, messageID string, cmd wageri
 	receivedAt := s.d.Clock()
 	res, err := s.wagering.Process(ctx, cmd, meta, func(ctx context.Context) error {
 		inserted, err := s.inbox.Insert(ctx, InboxMessage{
-			Consumer: ConsumerWagerTransactions, MessageID: messageID, PayloadHash: hash,
+			Consumer: inboxConsumer(cmd.ProviderID), MessageID: messageID, PayloadHash: hash,
 			ReceivedAt: receivedAt, ProcessedAt: s.d.Clock(),
 		})
 		if err != nil {
@@ -109,7 +114,7 @@ func (s *IntakeService) Handle(ctx context.Context, messageID string, cmd wageri
 
 // seen answers from the inbox; seen=false means the message is new.
 func (s *IntakeService) seen(ctx context.Context, messageID, hash string, cmd wagering.Command) (IntakeResult, bool, error) {
-	m, err := s.inbox.Get(ctx, ConsumerWagerTransactions, messageID)
+	m, err := s.inbox.Get(ctx, inboxConsumer(cmd.ProviderID), messageID)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return IntakeResult{}, false, nil

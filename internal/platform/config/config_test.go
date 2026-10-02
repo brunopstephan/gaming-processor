@@ -175,6 +175,27 @@ func TestLoadMessagingOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsSubSecondRetryBaseDelay(t *testing.T) {
+	_, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x", "SQS_RETRY_BASE_DELAY": "500ms"}))
+	if err == nil || !strings.Contains(err.Error(), "SQS_RETRY_BASE_DELAY") {
+		t.Fatalf("error %v must name SQS_RETRY_BASE_DELAY", err)
+	}
+	if _, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x", "SQS_RETRY_BASE_DELAY": "1s"})); err != nil {
+		t.Fatalf("1s must be accepted: %v", err)
+	}
+}
+
+func TestLoadRejectsOverlongProviderID(t *testing.T) {
+	long := strings.Repeat("p", 65)
+	_, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x", "SQS_SENDER_PROVIDER_MAP": "111111111111=" + long}))
+	if err == nil || !strings.Contains(err.Error(), "SQS_SENDER_PROVIDER_MAP") {
+		t.Fatalf("error %v must name SQS_SENDER_PROVIDER_MAP", err)
+	}
+	if _, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x", "SQS_SENDER_PROVIDER_MAP": "111111111111=" + long[:64]})); err != nil {
+		t.Fatalf("64 bytes must be accepted: %v", err)
+	}
+}
+
 func TestLoadMessagingInvalid(t *testing.T) {
 	_, err := Load(env(map[string]string{
 		"DATABASE_URL": "postgres://x", "SQS_SENDER_PROVIDER_MAP": "broken", "OUTBOX_ENABLED": "maybe",

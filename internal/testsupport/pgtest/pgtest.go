@@ -17,6 +17,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -81,11 +82,15 @@ func Open(t testing.TB, rawURL string) *gorm.DB {
 func FreshDatabase(t testing.TB) string {
 	t.Helper()
 	owner := OwnerDB(t)
-	name := fmt.Sprintf("wallet_t_%d", time.Now().UnixNano())
+	name := fmt.Sprintf("wallet_t_%d_%s", time.Now().UnixNano(), strings.ReplaceAll(uuid.NewString(), "-", "")[:8])
 	if err := owner.Exec("CREATE DATABASE " + name).Error; err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { owner.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)") })
+	t.Cleanup(func() {
+		if err := owner.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)").Error; err != nil {
+			t.Logf("drop database %s: %v", name, err)
+		}
+	})
 	_, file, _, _ := runtime.Caller(0)
 	migrations := filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations")
 	ownerURL := strings.Replace(WithDatabase(OwnerURL(), name), "postgres://", "pgx5://", 1)

@@ -36,7 +36,7 @@ func TestIntakeHandlesOnceAndRecordsInbox(t *testing.T) {
 	if err != nil || res.Outcome != app.IntakeHandled || res.Replay || res.Transaction.Status() != wagering.StatusProcessed {
 		t.Fatalf("first = %+v %v", res, err)
 	}
-	inbox, err := h.Inbox.Get(ctx, app.ConsumerWagerTransactions, msgID)
+	inbox, err := h.Inbox.Get(ctx, app.ConsumerWagerTransactions+"/provider-a", msgID)
 	if err != nil || inbox.PayloadHash != app.InboxHash(cmd) {
 		t.Fatalf("inbox = %+v %v", inbox, err)
 	}
@@ -58,6 +58,23 @@ func TestIntakeHandlesOnceAndRecordsInbox(t *testing.T) {
 	}
 	if got := balance(t, h, w.ID()); got != "75.00" {
 		t.Fatalf("balance = %s, want one debit (75.00)", got)
+	}
+}
+
+func TestIntakeScopesMessageIDByProvider(t *testing.T) {
+	h := apptest.New(t)
+	intake, _ := newIntake(t, h)
+	ctx := context.Background()
+	msgID := "msg-" + uuid.NewString()
+	for _, provider := range []string{"provider-a", "provider-b"} {
+		w := h.OpenWallet(t, "100.00")
+		res, err := intake.Handle(ctx, msgID, apptest.Command(t, w, provider, "BET", "10.00", ""), app.Meta{})
+		if err != nil || res.Outcome != app.IntakeHandled {
+			t.Fatalf("%s reusing another provider's messageId = %+v %v, want handled", provider, res, err)
+		}
+		if _, err := h.Inbox.Get(ctx, app.ConsumerWagerTransactions+"/"+provider, msgID); err != nil {
+			t.Fatalf("%s inbox entry: %v", provider, err)
+		}
 	}
 }
 
@@ -97,7 +114,7 @@ func TestIntakeAfterHTTPIsReplayAndRecordsInbox(t *testing.T) {
 	if err != nil || res.Outcome != app.IntakeHandled || !res.Replay {
 		t.Fatalf("cross-channel = %+v %v", res, err)
 	}
-	if _, err := h.Inbox.Get(ctx, app.ConsumerWagerTransactions, msgID); err != nil {
+	if _, err := h.Inbox.Get(ctx, app.ConsumerWagerTransactions+"/provider-a", msgID); err != nil {
 		t.Fatalf("a replayed message must be recorded in the inbox: %v", err)
 	}
 	if got := balance(t, h, w.ID()); got != "70.00" {

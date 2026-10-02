@@ -41,7 +41,7 @@ func (l *Loop) Start() {
 func (l *Loop) run(ctx context.Context) {
 	defer close(l.done)
 	for {
-		more, err := l.job(ctx)
+		more, err := l.runJob(ctx)
 		if ctx.Err() != nil {
 			return
 		}
@@ -58,6 +58,18 @@ func (l *Loop) run(ctx context.Context) {
 		case <-time.After(l.interval):
 		}
 	}
+}
+
+// runJob runs one job; a panic is logged and treated as a failed run so the
+// loop waits an interval and carries on.
+func (l *Loop) runJob(ctx context.Context) (more bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			l.log.ErrorContext(ctx, "background job panicked", "panic", fmt.Sprint(r))
+			more, err = false, fmt.Errorf("background: %s panicked: %v", l.name, r)
+		}
+	}()
+	return l.job(ctx)
 }
 
 // Stop cancels the running job and waits for the loop to end, up to timeout
