@@ -25,7 +25,7 @@ services:
     healthcheck: *postgres-healthcheck
 
   migrate:
-    image: migrate/migrate:v4.18.3
+    image: migrate/migrate:v4.20.1
     volumes:
       - ./migrations:/migrations:ro
     command:
@@ -50,7 +50,7 @@ services:
     healthcheck: *postgres-healthcheck
 
   migrate_test:
-    image: migrate/migrate:v4.18.3
+    image: migrate/migrate:v4.20.1
     profiles: ["test"]
     volumes:
       - ./migrations:/migrations:ro
