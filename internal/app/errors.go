@@ -22,4 +22,15 @@ var (
 	// ErrTransient reports a temporary infrastructure failure worth retrying
 	// (connection loss, lock or statement timeout, serialization, deadlock).
 	ErrTransient = errors.New("app: transient infrastructure failure")
+	// ErrWalletAlreadyExists reports a second wallet for the same (player, currency).
+	ErrWalletAlreadyExists = errors.New("app: wallet already exists for player and currency")
+	// ErrIdempotencyKeyConflict reports a key reused with a different business payload.
+	ErrIdempotencyKeyConflict = errors.New("app: idempotency key reused with a different payload")
+	// ErrExternalTransactionConflict reports an external transaction already
+	// registered under another idempotency key.
+	ErrExternalTransactionConflict = errors.New("app: external transaction already registered under another idempotency key")
+	// ErrInvalidCursor reports an undecodable ledger cursor.
+	ErrInvalidCursor = errors.New("app: invalid ledger cursor")
+	// ErrInvalidLimit reports a ledger page size outside 1..MaxLedgerLimit.
+	ErrInvalidLimit = errors.New("app: invalid ledger page size")
 )
