@@ -141,9 +141,11 @@ func (s *WageringService) apply(ctx context.Context, t *wagering.WagerTransactio
 	if w != nil {
 		before = w.Version()
 	}
-	entry, err := t.Process(wagering.ProcessInput{
-		Wallet: w, LedgerEntryID: newID(), RetryPolicy: s.policy, Now: s.d.Clock(),
-	})
+	in := wagering.ProcessInput{Wallet: w, LedgerEntryID: newID(), RetryPolicy: s.policy, Now: s.d.Clock()}
+	if err := s.resolveReference(ctx, t, &in); err != nil {
+		return err
+	}
+	entry, err := t.Process(in)
 	if err != nil {
 		return err
 	}
@@ -193,4 +195,32 @@ func (s *WageringService) completed(ctx context.Context, t *wagering.WagerTransa
 		"transactionId", t.ID().String(), "walletId", t.WalletID().String(), "providerId", t.ProviderID(),
 		"kind", string(t.Kind()), "status", string(t.Status()), "failureCode", string(t.FailureCode()),
 		"correlationId", meta.CorrelationID, "messageId", meta.CausationID)
+}
+
+// resolveReference loads the referenced operation of the same provider and,
+// for reversals, whether it was already reversed. The wallet row is already
+// locked, so a reference on the same wallet cannot change underneath; a
+// reference on another wallet is rejected by the domain (REFERENCE_MISMATCH).
+func (s *WageringService) resolveReference(ctx context.Context, t *wagering.WagerTransaction, in *wagering.ProcessInput) error {
+	refExt := t.ReferenceExternalTransactionID()
+	if refExt == "" {
+		return nil
+	}
+	ref, err := s.d.Transactions.FindByExternalID(ctx, t.ProviderID(), refExt)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return nil
+	case err != nil:
+		return err
+	}
+	r := ref.AsReference()
+	in.Reference = &r
+	if t.Kind().IsReversal() {
+		reversed, err := s.d.Transactions.HasProcessedReversal(ctx, r.ID, t.Kind(), r.Kind)
+		if err != nil {
+			return err
+		}
+		in.ReferenceAlreadyReversed = reversed
+	}
+	return nil
 }
