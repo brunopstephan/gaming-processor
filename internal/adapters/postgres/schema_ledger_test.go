@@ -12,18 +12,26 @@ import (
 	"github.com/brunopstephan/backend-challenge-go/internal/testsupport/pgtest"
 )
 
-// seedWalletAndBet inserts a wallet and a processed BET row and returns their ids.
-func seedWalletAndBet(t *testing.T, db *gorm.DB) (walletID, txID uuid.UUID) {
+// seedWalletAndBet inserts a wallet and a processed BET row and returns the
+// wallet, its player and the transaction ids.
+func seedWalletAndBet(t *testing.T, db *gorm.DB) (walletID, playerID, txID uuid.UUID) {
 	t.Helper()
 	w := walletRow(uuid.New(), "BRL", 7500)
 	if err := db.Table("wallets").Create(w).Error; err != nil {
 		t.Fatal(err)
 	}
-	bet := processed(externalRow(w["id"].(uuid.UUID), w["player_id"].(uuid.UUID), "BET", 2500), 7500)
+	walletID, playerID = w["id"].(uuid.UUID), w["player_id"].(uuid.UUID)
+	return walletID, playerID, seedBetOn(t, db, walletID, playerID)
+}
+
+// seedBetOn inserts another processed BET on an existing wallet.
+func seedBetOn(t *testing.T, db *gorm.DB, walletID, playerID uuid.UUID) uuid.UUID {
+	t.Helper()
+	bet := processed(externalRow(walletID, playerID, "BET", 2500), 7500)
 	if err := insertTx(db, bet); err != nil {
 		t.Fatal(err)
 	}
-	return w["id"].(uuid.UUID), bet["id"].(uuid.UUID)
+	return bet["id"].(uuid.UUID)
 }
 
 func ledgerRow(walletID, txID uuid.UUID, direction string, amount, before, after int64) map[string]any {
@@ -36,7 +44,7 @@ func ledgerRow(walletID, txID uuid.UUID, direction string, amount, before, after
 
 func TestLedgerConstraints(t *testing.T) {
 	db := pgtest.AppDB(t)
-	walletID, txID := seedWalletAndBet(t, db)
+	walletID, playerID, txID := seedWalletAndBet(t, db)
 
 	entry := ledgerRow(walletID, txID, "DEBIT", 2500, 10000, 7500)
 	if err := db.Table("wallet_ledger_entries").Create(entry).Error; err != nil {
@@ -46,7 +54,7 @@ func TestLedgerConstraints(t *testing.T) {
 	pgtest.RequirePgError(t, db.Table("wallet_ledger_entries").Create(dup).Error,
 		"23505", "wallet_ledger_entries_wallet_transaction_key")
 
-	_, otherTx := seedWalletAndBet(t, db)
+	otherTx := seedBetOn(t, db, walletID, playerID)
 	tests := []struct {
 		name       string
 		row        map[string]any
@@ -68,12 +76,23 @@ func TestLedgerConstraints(t *testing.T) {
 
 	missing := ledgerRow(walletID, uuid.New(), "CREDIT", 100, 0, 100)
 	pgtest.RequirePgError(t, db.Table("wallet_ledger_entries").Create(missing).Error,
-		"23503", "wallet_ledger_entries_transaction_id_fkey")
+		"23503", "wallet_ledger_entries_transaction_wallet_fkey")
+
+	// An entry must belong to the wallet of its transaction.
+	_, _, foreignTx := seedWalletAndBet(t, db)
+	crossed := ledgerRow(walletID, foreignTx, "CREDIT", 100, 0, 100)
+	pgtest.RequirePgError(t, db.Table("wallet_ledger_entries").Create(crossed).Error,
+		"23503", "wallet_ledger_entries_transaction_wallet_fkey")
+
+	badCurrency := ledgerRow(walletID, otherTx, "CREDIT", 100, 0, 100)
+	badCurrency["currency"] = "brl"
+	pgtest.RequirePgError(t, db.Table("wallet_ledger_entries").Create(badCurrency).Error,
+		"23514", "wallet_ledger_entries_currency_check")
 }
 
 func TestLedgerIsAppendOnly(t *testing.T) {
 	app := pgtest.AppDB(t)
-	walletID, txID := seedWalletAndBet(t, app)
+	walletID, _, txID := seedWalletAndBet(t, app)
 	entry := ledgerRow(walletID, txID, "DEBIT", 2500, 10000, 7500)
 	if err := app.Table("wallet_ledger_entries").Create(entry).Error; err != nil {
 		t.Fatal(err)

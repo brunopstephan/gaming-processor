@@ -77,6 +77,8 @@ CREATE TABLE wager_transactions (
     ),
     -- Lets reference_kind be verified against the referenced row's real kind.
     CONSTRAINT wager_transactions_id_kind_key UNIQUE (id, kind),
+    -- Lets a ledger entry be tied to its transaction's wallet.
+    CONSTRAINT wager_transactions_id_wallet_key UNIQUE (id, wallet_id),
     CONSTRAINT wager_transactions_reference_fkey
         FOREIGN KEY (reference_transaction_id, reference_kind)
         REFERENCES wager_transactions (id, kind) MATCH FULL,
