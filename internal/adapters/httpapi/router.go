@@ -5,7 +5,6 @@ package httpapi
 
 import (
 	"log/slog"
-	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -41,7 +40,11 @@ func NewRouter(d RouterDeps) *gin.Engine {
 
 	authn := authenticate(d.Auth)
 	wallets := r.Group("/wallets", authn, requireAnyScope(auth.ScopeWallets))
-	wallets.GET("/:walletId", func(c *gin.Context) { c.Status(http.StatusNotImplemented) }) // replaced in Task 6
+	wh := walletHandlers{wallets: d.Wallets, queries: d.Queries, reconciliation: d.Reconciliation}
+	wallets.POST("", wh.open)
+	wallets.GET("/:walletId", wh.get)
+	wallets.GET("/:walletId/ledger", wh.ledger)
+	wallets.POST("/:walletId/reconciliation", wh.reconcile)
 
 	return r
 }
