@@ -96,3 +96,32 @@ type InboxRepository interface {
 	// Insert records m unless (consumer, messageId) exists; inserted=false reports that.
 	Insert(ctx context.Context, m InboxMessage) (inserted bool, err error)
 }
+
+// OutboxEvent is a stored event to publish. ID is the eventId, the
+// deduplication key of every republication.
+type OutboxEvent struct {
+	ID          uuid.UUID
+	AggregateID uuid.UUID
+	EventType   string
+	Payload     []byte
+	OccurredAt  time.Time
+	Attempts    int
+}
+
+// OutboxRelayRepository leases pending events to one relay at a time.
+type OutboxRelayRepository interface {
+	// Claim leases up to limit unpublished events that are due and not
+	// leased (or whose lease expired) to owner for lease, incrementing their
+	// attempts. Oldest first.
+	Claim(ctx context.Context, owner string, lease time.Duration, limit int) ([]OutboxEvent, error)
+	// MarkPublished records the publication if owner still holds the lease.
+	MarkPublished(ctx context.Context, id uuid.UUID, owner string) (bool, error)
+	// Reschedule releases owner's lease and makes the event due again after
+	// delay, keeping lastError.
+	Reschedule(ctx context.Context, id uuid.UUID, owner string, delay time.Duration, lastError string) error
+}
+
+// EventPublisher sends one event to the broker.
+type EventPublisher interface {
+	Publish(ctx context.Context, e OutboxEvent) error
+}

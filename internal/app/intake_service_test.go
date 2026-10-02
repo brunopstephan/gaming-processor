@@ -53,6 +53,9 @@ func TestIntakeHandlesOnceAndRecordsInbox(t *testing.T) {
 	if err != nil || again.Outcome != app.IntakeDuplicate || h.Metrics.Count("inbox_duplicate") != 1 {
 		t.Fatalf("redelivery = %+v %v", again, err)
 	}
+	if again.Transaction == nil || again.Transaction.Status() != wagering.StatusProcessed {
+		t.Fatalf("duplicate must carry the persisted transaction, got %+v", again.Transaction)
+	}
 	if got := balance(t, h, w.ID()); got != "75.00" {
 		t.Fatalf("balance = %s, want one debit (75.00)", got)
 	}

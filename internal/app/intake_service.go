@@ -27,8 +27,8 @@ const (
 	IntakeMessageReused IntakeOutcome = "MESSAGE_ID_REUSED"
 )
 
-// IntakeResult is the outcome of Handle. Transaction and Replay are set when
-// Outcome is IntakeHandled.
+// IntakeResult is the outcome of Handle. Transaction is set when Outcome is
+// IntakeHandled and, when found, IntakeDuplicate; Replay only for IntakeHandled.
 type IntakeResult struct {
 	Outcome     IntakeOutcome
 	Transaction *wagering.WagerTransaction
@@ -75,7 +75,7 @@ func (s *IntakeService) Handle(ctx context.Context, messageID string, cmd wageri
 		return IntakeResult{}, errors.New("app: messageId is required")
 	}
 	hash := InboxHash(cmd)
-	if res, seen, err := s.seen(ctx, messageID, hash); seen || err != nil {
+	if res, seen, err := s.seen(ctx, messageID, hash, cmd); seen || err != nil {
 		return res, err
 	}
 	meta.Channel = ChannelSQS
@@ -95,7 +95,7 @@ func (s *IntakeService) Handle(ctx context.Context, messageID string, cmd wageri
 		return nil
 	})
 	if errors.Is(err, errInboxRace) {
-		res, seen, err := s.seen(ctx, messageID, hash)
+		res, seen, err := s.seen(ctx, messageID, hash, cmd)
 		if err == nil && !seen {
 			return IntakeResult{}, fmt.Errorf("%w: inbox entry %q not visible", ErrTransient, messageID)
 		}
@@ -108,7 +108,7 @@ func (s *IntakeService) Handle(ctx context.Context, messageID string, cmd wageri
 }
 
 // seen answers from the inbox; seen=false means the message is new.
-func (s *IntakeService) seen(ctx context.Context, messageID, hash string) (IntakeResult, bool, error) {
+func (s *IntakeService) seen(ctx context.Context, messageID, hash string, cmd wagering.Command) (IntakeResult, bool, error) {
 	m, err := s.inbox.Get(ctx, ConsumerWagerTransactions, messageID)
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -119,5 +119,14 @@ func (s *IntakeService) seen(ctx context.Context, messageID, hash string) (Intak
 		return IntakeResult{Outcome: IntakeMessageReused}, true, nil
 	}
 	s.d.Metrics.InboxDuplicate()
-	return IntakeResult{Outcome: IntakeDuplicate}, true, nil
+	// The persisted transaction lets the caller tell a committed FAILED outcome
+	// whose dead-lettering did not complete.
+	tx, err := s.d.Transactions.FindByIdempotencyKey(ctx, cmd.ProviderID, cmd.IdempotencyKey)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return IntakeResult{Outcome: IntakeDuplicate}, true, nil
+	case err != nil:
+		return IntakeResult{}, false, err
+	}
+	return IntakeResult{Outcome: IntakeDuplicate, Transaction: tx}, true, nil
 }

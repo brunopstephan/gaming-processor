@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"github.com/brunopstephan/backend-challenge-go/internal/app"
@@ -52,4 +55,63 @@ func (r *OutboxRepository) Append(ctx context.Context, envs ...events.Envelope) 
 		})
 	}
 	return mapError(conn(ctx, r.db).Create(&rows).Error)
+}
+
+var _ app.OutboxRelayRepository = (*OutboxRepository)(nil)
+
+const maxLastError = 1000
+
+// Claim leases due events with FOR UPDATE SKIP LOCKED, so concurrent relays
+// never claim the same event. Times come from the database clock.
+func (r *OutboxRepository) Claim(ctx context.Context, owner string, lease time.Duration, limit int) ([]app.OutboxEvent, error) {
+	var rows []outboxEventModel
+	err := conn(ctx, r.db).Raw(`
+UPDATE outbox_events
+   SET locked_by = ?, locked_until = now() + make_interval(secs => ?), attempts = attempts + 1
+ WHERE id IN (SELECT id FROM outbox_events
+               WHERE published_at IS NULL AND next_attempt_at <= now()
+                 AND (locked_until IS NULL OR locked_until < now())
+               ORDER BY occurred_at, id
+               LIMIT ?
+               FOR UPDATE SKIP LOCKED)
+RETURNING *`, owner, lease.Seconds(), limit).Scan(&rows).Error
+	if err != nil {
+		return nil, mapError(err)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if !rows[i].OccurredAt.Equal(rows[j].OccurredAt) {
+			return rows[i].OccurredAt.Before(rows[j].OccurredAt)
+		}
+		return rows[i].ID.String() < rows[j].ID.String()
+	})
+	out := make([]app.OutboxEvent, 0, len(rows))
+	for _, m := range rows {
+		out = append(out, app.OutboxEvent{ID: m.ID, AggregateID: m.AggregateID, EventType: m.EventType,
+			Payload: m.Payload, OccurredAt: m.OccurredAt.UTC(), Attempts: m.Attempts})
+	}
+	return out, nil
+}
+
+// MarkPublished sets published_at if owner still holds the lease.
+func (r *OutboxRepository) MarkPublished(ctx context.Context, id uuid.UUID, owner string) (bool, error) {
+	res := conn(ctx, r.db).Exec(`
+UPDATE outbox_events SET published_at = now(), locked_by = NULL, locked_until = NULL, last_error = NULL
+ WHERE id = ? AND locked_by = ? AND published_at IS NULL`, id, owner)
+	if res.Error != nil {
+		return false, mapError(res.Error)
+	}
+	return res.RowsAffected == 1, nil
+}
+
+// Reschedule releases owner's lease and schedules the next attempt.
+func (r *OutboxRepository) Reschedule(ctx context.Context, id uuid.UUID, owner string, delay time.Duration, lastError string) error {
+	if len(lastError) > maxLastError {
+		lastError = lastError[:maxLastError]
+	}
+	lastError = strings.ToValidUTF8(lastError, "?")
+	res := conn(ctx, r.db).Exec(`
+UPDATE outbox_events
+   SET next_attempt_at = now() + make_interval(secs => ?), locked_by = NULL, locked_until = NULL, last_error = ?
+ WHERE id = ? AND locked_by = ? AND published_at IS NULL`, delay.Seconds(), lastError, id, owner)
+	return mapError(res.Error)
 }
