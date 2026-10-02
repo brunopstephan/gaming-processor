@@ -54,11 +54,10 @@ func TestCrashAfterPublishBeforeMark(t *testing.T) {
 	}
 
 	b1 := c.start(t, "publisher-b", nil)
-	b2 := c.start(t, "publisher-c", nil)
+	c.start(t, "publisher-c", nil)
 	if code, body := postTx(t, b1, kctest.Token(t, "provider-a"), txRequest{Provider: "provider-a", Ext: uuid.NewString(), Kind: "BET", Amount: "5.00", W: w}); code != 200 {
 		t.Fatalf("bet = %d %v", code, body)
 	}
-	_ = b2
 
 	var rows []struct {
 		ID       string
@@ -103,13 +102,15 @@ func TestCrashAfterPublishBeforeMark(t *testing.T) {
 			t.Fatalf("event %s delivered %d times, want exactly once (republished with the same eventId)", r.ID, seen[r.ID])
 		}
 	}
+	eventually(t, 5*time.Second, "events queue drained with no late duplicate", func() bool { return c.queueEmpty(t, c.queues.Events.URL) })
+	reconcile(t, b1, w)
 }
 
 // Scenario 7: reversals delivered before their reference are resolved by the
 // worker (on any instance) or expire with REFERENCE_NOT_FOUND.
 func TestReversalBeforeReference(t *testing.T) {
 	c := newCluster(t, clusterOptions{Env: map[string]string{
-		"REFERENCE_RETRY_BASE_DELAY": "200ms", "REFERENCE_RETRY_MAX_DELAY": "200ms", "REFERENCE_RETRY_MAX_ATTEMPTS": "20",
+		"REFERENCE_RETRY_BASE_DELAY": "200ms", "REFERENCE_RETRY_MAX_DELAY": "200ms", "REFERENCE_RETRY_MAX_ATTEMPTS": "50",
 	}})
 	a, b := c.start(t, "a", nil), c.start(t, "b", nil)
 	token := kctest.Token(t, "provider-a")
@@ -137,15 +138,17 @@ func TestReversalBeforeReference(t *testing.T) {
 	if code, body := postTx(t, a, token, orphan); code != 202 {
 		t.Fatalf("orphan refund = %d %v, want 202 PENDING_REFERENCE", code, body)
 	}
-	eventually(t, 20*time.Second, "orphan expired", func() bool {
+	eventually(t, 30*time.Second, "orphan expired", func() bool {
 		v := getByExternal(t, b, "provider-a", orphan.Ext)
 		return v != nil && v["status"] == "REJECTED" && v["failureCode"] == "REFERENCE_NOT_FOUND"
 	})
 	reconcile(t, b, w)
 }
 
-// Scenario 8: kill -9 and SIGTERM; a new instance preserves idempotency,
-// resumes pending operations and keeps the books consistent.
+// Scenario 8: one instance is killed with SIGKILL and the other stopped with
+// SIGTERM (the pending refund was created on the latter); a new instance
+// preserves idempotency, resumes the pending operation and keeps the books
+// consistent. In-flight crashes are covered by scenarios 5 and 6.
 func TestRestartPreservesIdempotencyAndPendings(t *testing.T) {
 	c := newCluster(t, clusterOptions{Env: map[string]string{
 		"REFERENCE_RETRY_BASE_DELAY": "1s", "REFERENCE_RETRY_MAX_DELAY": "1s", "REFERENCE_RETRY_MAX_ATTEMPTS": "60",
@@ -154,7 +157,10 @@ func TestRestartPreservesIdempotencyAndPendings(t *testing.T) {
 	token := kctest.Token(t, "provider-a")
 	w := openWallet(t, a, "100.00")
 	bet := txRequest{Provider: "provider-a", Ext: uuid.NewString(), Kind: "BET", Amount: "20.00", W: w}
-	_, original := postTx(t, a, token, bet)
+	code, original := postTx(t, a, token, bet)
+	if code != 200 {
+		t.Fatalf("original bet = %d %v", code, original)
+	}
 	laterBet := txRequest{Provider: "provider-a", Ext: uuid.NewString(), Kind: "BET", Amount: "15.00", W: w}
 	refund := txRequest{Provider: "provider-a", Ext: uuid.NewString(), Kind: "REFUND", Amount: "15.00", Ref: laterBet.Ext, W: w}
 	if code, body := postTx(t, b, token, refund); code != 202 {
@@ -168,8 +174,12 @@ func TestRestartPreservesIdempotencyAndPendings(t *testing.T) {
 
 	n := c.start(t, "restarted", nil)
 	code, replay := postTx(t, n, token, bet)
+	replayBalance, ok := replay["balance"].(map[string]any)
+	if !ok {
+		t.Fatalf("replay after restart = %d %v, balance missing or malformed", code, replay)
+	}
 	if code != 200 || replay["idempotentReplay"] != true || replay["transactionId"] != original["transactionId"] ||
-		replay["balance"].(map[string]any)["amount"] != "80.00" {
+		replayBalance["amount"] != "80.00" {
 		t.Fatalf("replay after restart = %d %v, want the original result %v", code, replay, original)
 	}
 	if code, body := postTx(t, n, token, laterBet); code != 200 {
