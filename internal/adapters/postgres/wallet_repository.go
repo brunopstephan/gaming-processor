@@ -44,12 +44,11 @@ func (r *WalletRepository) Get(ctx context.Context, id uuid.UUID) (*wallet.Walle
 // GetForUpdate reads a wallet with SELECT ... FOR UPDATE. Concurrent writers
 // of the same wallet wait (up to lock_timeout); other wallets are unaffected.
 func (r *WalletRepository) GetForUpdate(ctx context.Context, id uuid.UUID) (*wallet.Wallet, error) {
-	tx, ok := txFrom(ctx)
-	if !ok {
+	if _, ok := txFrom(ctx); !ok {
 		return nil, errNoTransaction
 	}
 	var m walletModel
-	err := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).Where("id = ?", id).Take(&m).Error
+	err := conn(ctx, r.db).Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).Where("id = ?", id).Take(&m).Error
 	if err != nil {
 		return nil, mapError(err)
 	}
