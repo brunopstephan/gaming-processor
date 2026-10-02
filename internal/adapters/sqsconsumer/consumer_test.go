@@ -86,10 +86,31 @@ func (f *fixture) deliver(t *testing.T, sender *sqs.Client, body string) types.M
 	return msgs[0]
 }
 
+// inputEmpty asserts the input queue holds no message, visible or in flight:
+// a received but undeleted message is invisible, so only the queue counters
+// can tell a delete from a pending visibility timeout.
 func (f *fixture) inputEmpty(t *testing.T) {
 	t.Helper()
-	if msgs := sqstest.Receive(t, f.owner, f.q.Input.URL, 1500*time.Millisecond); len(msgs) != 0 {
-		t.Fatalf("input still has %d messages", len(msgs))
+	var visible, inFlight string
+	for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+		out, err := f.owner.GetQueueAttributes(context.Background(), &sqs.GetQueueAttributesInput{
+			QueueUrl: aws.String(f.q.Input.URL),
+			AttributeNames: []types.QueueAttributeName{
+				types.QueueAttributeNameApproximateNumberOfMessages,
+				types.QueueAttributeNameApproximateNumberOfMessagesNotVisible,
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		visible = out.Attributes[string(types.QueueAttributeNameApproximateNumberOfMessages)]
+		inFlight = out.Attributes[string(types.QueueAttributeNameApproximateNumberOfMessagesNotVisible)]
+		if visible == "0" && inFlight == "0" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("input queue has %s visible and %s in flight messages, want none", visible, inFlight)
+		}
 	}
 }
 
@@ -150,6 +171,74 @@ func TestRedeliveryAfterLostDeleteIsDuplicate(t *testing.T) {
 	if f.balance(t, w) != "75.00" || h.Metrics.Count("inbox_duplicate") != 1 {
 		t.Fatalf("balance %s duplicates %d, want one debit and one duplicate", f.balance(t, w), h.Metrics.Count("inbox_duplicate"))
 	}
+}
+
+// sendFails simulates a DLQ outage.
+type sendFails struct{ API }
+
+func (sendFails) SendMessage(context.Context, *sqs.SendMessageInput, ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+	return nil, errors.New("dlq unavailable")
+}
+
+func TestFailedDeadLetterNeverDeletes(t *testing.T) {
+	h := apptest.New(t)
+	f := newFixture(t, h.Deps, h)
+	w := h.OpenWallet(t, "100.00")
+	msg := f.deliver(t, sqstest.Client(t, sqstest.ProviderBAccount), body("msg-"+uuid.NewString(), "provider-a", w, "BET", "5.00", uuid.NewString(), ""))
+
+	broken := New(sendFails{f.owner}, f.c.intake, f.metrics, f.c.log, f.c.s)
+	broken.HandleMessage(context.Background(), msg)
+
+	if f.metrics.retries != 1 {
+		t.Fatalf("retries = %d, want 1", f.metrics.retries)
+	}
+	if dead := sqstest.Receive(t, f.owner, f.q.InputDLQ.URL, time.Second); len(dead) != 0 {
+		t.Fatalf("dlq has %d messages, want none", len(dead))
+	}
+	again := sqstest.Receive(t, f.owner, f.q.Input.URL, 10*time.Second)
+	if len(again) != 1 || again[0].Attributes["ApproximateReceiveCount"] != "2" {
+		t.Fatalf("redelivery = %+v, want the message back with receive count 2", again)
+	}
+}
+
+// failedDuplicate answers every message as an inbox duplicate whose persisted
+// transaction is FAILED: the redelivery after a FAILED commit whose
+// dead-lettering did not complete.
+type failedDuplicate struct{ tx *wagering.WagerTransaction }
+
+func (d failedDuplicate) Handle(context.Context, string, wagering.Command, app.Meta) (app.IntakeResult, error) {
+	return app.IntakeResult{Outcome: app.IntakeDuplicate, Transaction: d.tx}, nil
+}
+
+func TestDuplicateOfFailedTransactionIsDeadLettered(t *testing.T) {
+	h := apptest.New(t)
+	f := newFixture(t, h.Deps, h)
+	w := h.OpenWallet(t, "100.00")
+	ext := uuid.NewString()
+	cmd, err := wagering.ParseCommand(wagering.RawCommand{ProviderID: "provider-a", ExternalTransactionID: ext,
+		IdempotencyKey: "provider-a:" + ext, PlayerID: w.PlayerID().String(), WalletID: w.ID().String(),
+		RoundID: "round-1", GameID: "game-1", Kind: "BET", Amount: "5.00", Currency: "BRL"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := wagering.NewExternal(uuid.New(), cmd, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.MarkFailed(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c := New(f.owner, failedDuplicate{tx}, f.metrics, f.c.log, f.c.s)
+	msg := f.deliver(t, sqstest.Client(t, sqstest.ProviderAAccount), body("msg-"+uuid.NewString(), "provider-a", w, "BET", "5.00", ext, ""))
+	if d := c.decide(context.Background(), msg); d.action != actDeadLetter || d.reason != "INFRASTRUCTURE_FAILURE" {
+		t.Fatalf("decision = %+v, want dead-letter INFRASTRUCTURE_FAILURE", d)
+	}
+	c.HandleMessage(context.Background(), msg)
+	dead := sqstest.Receive(t, f.owner, f.q.InputDLQ.URL, 10*time.Second)
+	if len(dead) != 1 || sqstest.FailureReason(dead[0]) != "INFRASTRUCTURE_FAILURE" {
+		t.Fatalf("dlq = %+v", dead)
+	}
+	f.inputEmpty(t)
 }
 
 func TestHandleDeadLetters(t *testing.T) {

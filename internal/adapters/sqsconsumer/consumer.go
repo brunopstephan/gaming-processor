@@ -139,6 +139,10 @@ func (c *Consumer) decide(ctx context.Context, msg types.Message) decision {
 	}
 	switch {
 	case res.Outcome == app.IntakeDuplicate:
+		if res.Transaction != nil && res.Transaction.Status() == wagering.StatusFailed {
+			// A redelivery after a FAILED commit whose dead-lettering did not complete.
+			return decision{actDeadLetter, string(wagering.FailureInfrastructure)}
+		}
 		log.InfoContext(ctx, "duplicate message dropped")
 		return decision{action: actDelete}
 	case res.Outcome == app.IntakeMessageReused:
