@@ -23,6 +23,7 @@ var Module = fx.Module("app",
 		},
 		NewQueryService,
 		NewReconciliationService,
+		NewIntakeService,
 	),
 )
 
