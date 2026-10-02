@@ -53,7 +53,12 @@ func NewServer(lc fx.Lifecycle, cfg config.Config, router *gin.Engine, readiness
 			readiness.StartDraining()
 			ctx, cancel := context.WithTimeout(ctx, cfg.HTTP.ShutdownTimeout)
 			defer cancel()
-			return s.srv.Shutdown(ctx)
+			if err := s.srv.Shutdown(ctx); err != nil {
+				// Deadline hit: force-close so handlers do not outlive the DB pool.
+				_ = s.srv.Close()
+				return err
+			}
+			return nil
 		},
 	})
 	return s
