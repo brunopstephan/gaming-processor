@@ -94,22 +94,36 @@ func queueURL(ctx context.Context, c *sqs.Client, name string) (string, error) {
 	return aws.ToString(out.QueueUrl), nil
 }
 
-// newHealthCheck probes the input queue (or the events queue when the
-// consumer is off) with the identity that uses it.
-func newHealthCheck(cfg config.Config, c *Clients, q *Queues) health.Check {
+// newHealthCheck probes every resolved queue with the identity that uses it:
+// the input queue with the consumer, the events queue with the publisher.
+func newHealthCheck(c *Clients, q *Queues) health.Check {
 	return health.Check{Name: "sqs", Probe: func(ctx context.Context) error {
-		client, url := c.Consumer, q.Input
-		if !cfg.Toggles.Consumer {
-			client, url = c.Publisher, q.Events
+		probes := []struct {
+			client *sqs.Client
+			url    string
+			name   string
+		}{
+			{c.Consumer, q.Input, "input"},
+			{c.Publisher, q.Events, "events"},
 		}
-		if url == "" {
+		probed := false
+		for _, p := range probes {
+			if p.url == "" {
+				continue
+			}
+			probed = true
+			_, err := p.client.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
+				QueueUrl:       aws.String(p.url),
+				AttributeNames: []types.QueueAttributeName{types.QueueAttributeNameApproximateNumberOfMessages},
+			})
+			if err != nil {
+				return fmt.Errorf("awssqs: %s queue: %w", p.name, err)
+			}
+		}
+		if !probed {
 			return errors.New("awssqs: queues not resolved")
 		}
-		_, err := client.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
-			QueueUrl:       aws.String(url),
-			AttributeNames: []types.QueueAttributeName{types.QueueAttributeNameApproximateNumberOfMessages},
-		})
-		return err
+		return nil
 	}}
 }
 

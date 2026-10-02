@@ -4,6 +4,7 @@ package awssqs
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"go.uber.org/fx"
@@ -73,5 +74,30 @@ func TestOnlyEnabledComponentsResolveTheirQueues(t *testing.T) {
 	defer app.RequireStop()
 	if queues.Input != "" || queues.Events != q.Events.URL {
 		t.Fatalf("queues = %+v", queues)
+	}
+}
+
+func TestHealthCheckProbesEveryResolvedQueue(t *testing.T) {
+	q := sqstest.NewQueues(t, sqstest.Options{})
+	clients, err := NewClients(testConfig(t, q))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	healthy := newHealthCheck(clients, &Queues{Input: q.Input.URL, Events: q.Events.URL})
+	if err := healthy.Probe(ctx); err != nil {
+		t.Fatalf("healthy probe: %v", err)
+	}
+	badEvents := newHealthCheck(clients, &Queues{Input: q.Input.URL, Events: q.Events.URL + "-gone"})
+	if err := badEvents.Probe(ctx); err == nil || !strings.Contains(err.Error(), "events") {
+		t.Fatalf("broken events queue must fail the probe naming it, got %v", err)
+	}
+	badInput := newHealthCheck(clients, &Queues{Input: q.Input.URL + "-gone", Events: q.Events.URL})
+	if err := badInput.Probe(ctx); err == nil || !strings.Contains(err.Error(), "input") {
+		t.Fatalf("broken input queue must fail the probe naming it, got %v", err)
+	}
+	if err := newHealthCheck(clients, &Queues{}).Probe(ctx); err == nil {
+		t.Fatal("no resolved queue must fail the probe")
 	}
 }
