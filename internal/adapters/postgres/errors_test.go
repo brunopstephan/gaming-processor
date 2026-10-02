@@ -80,3 +80,13 @@ func TestMapError(t *testing.T) {
 		t.Fatalf("constraint named %d times, want once: %v", n, once)
 	}
 }
+
+func TestMapErrorLockTimeout(t *testing.T) {
+	got := mapError(fmt.Errorf("query: %w", &pgconn.PgError{Code: "55P03"}))
+	if !errors.Is(got, app.ErrLockTimeout) || !errors.Is(got, app.ErrTransient) {
+		t.Fatalf("mapError(55P03) = %v, want ErrLockTimeout (and ErrTransient)", got)
+	}
+	if got := mapError(fmt.Errorf("query: %w", &pgconn.PgError{Code: "40P01"})); errors.Is(got, app.ErrLockTimeout) {
+		t.Fatalf("deadlock must not be reported as lock timeout: %v", got)
+	}
+}

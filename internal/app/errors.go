@@ -16,6 +16,9 @@ var (
 	// It also matches ErrTransient: the caller should retry, never record a
 	// permanent failure.
 	ErrVersionConflict = fmt.Errorf("app: concurrent update: %w", ErrTransient)
+	// ErrLockTimeout reports a row lock not granted within lock_timeout. It
+	// also matches ErrTransient.
+	ErrLockTimeout = fmt.Errorf("app: lock timeout: %w", ErrTransient)
 	// ErrTransient reports a temporary infrastructure failure worth retrying
 	// (connection loss, lock or statement timeout, serialization, deadlock).
 	ErrTransient = errors.New("app: transient infrastructure failure")

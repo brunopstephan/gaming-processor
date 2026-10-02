@@ -45,6 +45,8 @@ func mapError(err error) error {
 		switch {
 		case pgErr.Code == "23505":
 			return fmt.Errorf("%w: %s: %w", app.ErrConflict, pgErr.ConstraintName, err)
+		case pgErr.Code == "55P03":
+			return fmt.Errorf("%w: %w", app.ErrLockTimeout, err)
 		case transientCodes[pgErr.Code] || strings.HasPrefix(pgErr.Code, "08"):
 			return fmt.Errorf("%w: %w", app.ErrTransient, err)
 		default:

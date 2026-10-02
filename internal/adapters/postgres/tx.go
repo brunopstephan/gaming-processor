@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -28,12 +30,33 @@ func NewTxManager(db *gorm.DB, cfg config.Config) *TxManager {
 	return &TxManager{db: db, lockTimeout: cfg.Database.LockTimeout, statementTimeout: cfg.Database.StatementTimeout}
 }
 
+// errNestedSnapshot reports WithinSnapshot called inside another transaction.
+var errNestedSnapshot = errors.New("postgres: WithinSnapshot cannot run inside another transaction")
+
 // WithinTx runs fn in a READ COMMITTED transaction with transaction-local
 // lock_timeout and statement_timeout. A call inside an existing transaction
 // joins it. Errors are classified with mapError.
 func (m *TxManager) WithinTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	if _, ok := txFrom(ctx); ok {
 		return fn(ctx)
+	}
+	return m.run(ctx, nil, fn)
+}
+
+// WithinSnapshot runs fn in a REPEATABLE READ READ ONLY transaction, so all
+// reads see the same snapshot (used by reconciliation). It never joins an
+// existing transaction.
+func (m *TxManager) WithinSnapshot(ctx context.Context, fn func(ctx context.Context) error) error {
+	if _, ok := txFrom(ctx); ok {
+		return errNestedSnapshot
+	}
+	return m.run(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, fn)
+}
+
+func (m *TxManager) run(ctx context.Context, opts *sql.TxOptions, fn func(ctx context.Context) error) error {
+	var options []*sql.TxOptions
+	if opts != nil {
+		options = append(options, opts)
 	}
 	err := m.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		err := tx.Exec("SELECT set_config('lock_timeout', ?, true), set_config('statement_timeout', ?, true)",
@@ -42,7 +65,7 @@ func (m *TxManager) WithinTx(ctx context.Context, fn func(ctx context.Context) e
 			return err
 		}
 		return fn(context.WithValue(ctx, txKey{}, tx))
-	})
+	}, options...)
 	return mapError(err)
 }
 

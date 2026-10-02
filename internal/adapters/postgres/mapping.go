@@ -150,3 +150,28 @@ func optTime(t time.Time) *time.Time {
 	}
 	return &t
 }
+
+func ledgerEntryFromModel(m ledgerEntryModel) (wallet.LedgerEntry, error) {
+	amount, err := moneyFrom(m.AmountMinor, m.Currency)
+	if err != nil {
+		return wallet.LedgerEntry{}, fmt.Errorf("postgres: ledger entry %s: %w", m.ID, err)
+	}
+	before, err := moneyFrom(m.BalanceBeforeMinor, m.Currency)
+	if err != nil {
+		return wallet.LedgerEntry{}, fmt.Errorf("postgres: ledger entry %s: %w", m.ID, err)
+	}
+	after, err := moneyFrom(m.BalanceAfterMinor, m.Currency)
+	if err != nil {
+		return wallet.LedgerEntry{}, fmt.Errorf("postgres: ledger entry %s: %w", m.ID, err)
+	}
+	return wallet.NewLedgerEntry(wallet.LedgerEntryParams{
+		ID:            m.ID,
+		WalletID:      m.WalletID,
+		TransactionID: m.TransactionID,
+		Direction:     wallet.Direction(m.Direction),
+		Amount:        amount,
+		BalanceBefore: before,
+		BalanceAfter:  after,
+		CreatedAt:     m.CreatedAt,
+	})
+}

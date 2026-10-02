@@ -20,6 +20,10 @@ import (
 // from a context that carries no transaction.
 type TxManager interface {
 	WithinTx(ctx context.Context, fn func(ctx context.Context) error) error
+	// WithinSnapshot runs fn in a read-only REPEATABLE READ transaction: every
+	// read sees one consistent snapshot and writes are refused. It never joins
+	// an outer transaction.
+	WithinSnapshot(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
 // WalletRepository persists the Wallet aggregate.
@@ -56,9 +60,14 @@ type TransactionRepository interface {
 	HasProcessedReversal(ctx context.Context, referenceID uuid.UUID, kind, referenceKind wagering.Kind) (bool, error)
 }
 
-// LedgerRepository appends immutable ledger entries.
+// LedgerRepository appends immutable ledger entries and queries them.
 type LedgerRepository interface {
 	Append(ctx context.Context, e wallet.LedgerEntry) error
+	// List returns up to limit entries of walletID with id greater than after
+	// (uuid.Nil for the first page), ordered by id.
+	List(ctx context.Context, walletID, after uuid.UUID, limit int) ([]wallet.LedgerEntry, error)
+	// Totals returns credits minus debits in minor units and the entry count.
+	Totals(ctx context.Context, walletID uuid.UUID) (net int64, count int64, err error)
 }
 
 // OutboxRepository stores integration events in the same transaction as the

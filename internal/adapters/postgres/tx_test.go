@@ -174,3 +174,54 @@ func TestConnHonorsPerCallContextInTx(t *testing.T) {
 		t.Fatalf("took %s, per-call context not honored", elapsed)
 	}
 }
+
+func TestWithinSnapshotSeesOneConsistentSnapshot(t *testing.T) {
+	db := newTestDB(t)
+	tm := testTxManager(db, time.Second)
+	ctx := context.Background()
+	player := uuid.New()
+	if err := db.Table("wallets").Create(walletRow(player, "BRL", 0)).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	err := tm.WithinSnapshot(ctx, func(ctx context.Context) error {
+		var before, after int64
+		if err := conn(ctx, db).Table("wallets").Where("player_id = ?", player).Count(&before).Error; err != nil {
+			return err
+		}
+		// Committed by another transaction after the snapshot started: invisible inside it.
+		if err := db.Table("wallets").Create(walletRow(player, "USD", 0)).Error; err != nil {
+			return err
+		}
+		if err := conn(ctx, db).Table("wallets").Where("player_id = ?", player).Count(&after).Error; err != nil {
+			return err
+		}
+		if before != 1 || after != 1 {
+			t.Errorf("snapshot saw %d then %d wallets, want 1 and 1", before, after)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWithinSnapshotIsReadOnly(t *testing.T) {
+	db := newTestDB(t)
+	tm := testTxManager(db, time.Second)
+	err := tm.WithinSnapshot(context.Background(), func(ctx context.Context) error {
+		return conn(ctx, db).Table("wallets").Create(walletRow(uuid.New(), "BRL", 0)).Error
+	})
+	pgtest.RequirePgError(t, err, "25006", "") // read_only_sql_transaction
+}
+
+func TestWithinSnapshotRefusesToNest(t *testing.T) {
+	db := newTestDB(t)
+	tm := testTxManager(db, time.Second)
+	err := tm.WithinTx(context.Background(), func(ctx context.Context) error {
+		return tm.WithinSnapshot(ctx, func(context.Context) error { return nil })
+	})
+	if err == nil {
+		t.Fatal("WithinSnapshot inside WithinTx must fail")
+	}
+}
