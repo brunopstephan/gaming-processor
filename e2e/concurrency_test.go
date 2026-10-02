@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -95,20 +96,37 @@ func TestTwoBetsOfEightyOnOneHundred(t *testing.T) {
 		second := txRequest{Provider: "provider-a", Ext: uuid.NewString(), Kind: "BET", Amount: "80.00", W: w}
 
 		holder := c.db.Begin()
+		if holder.Error != nil {
+			t.Fatal(holder.Error)
+		}
 		if err := holder.Exec(`SELECT id FROM wallets WHERE id = ? FOR UPDATE`, w.id).Error; err != nil {
+			holder.Rollback()
 			t.Fatal(err)
 		}
+		defer holder.Rollback()
 		codes := make([]int, 2)
 		bodies := make([]map[string]any, 2)
+		var finished atomic.Int32
 		var wg sync.WaitGroup
 		for i, r := range []txRequest{first, second} {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				codes[i], bodies[i] = postTxNoFatal(ps[i], token, r)
+				finished.Add(1)
 			}()
 		}
-		time.Sleep(time.Second) // both requests are now blocked on the wallet lock
+		eventually(t, 15*time.Second, "both requests blocked on the wallet lock", func() bool {
+			var n int
+			if err := c.db.Raw(`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&n).Error; err != nil {
+				return false
+			}
+			return n >= 2
+		})
+		if n := finished.Load(); n != 0 {
+			holder.Rollback()
+			t.Fatalf("round %d: %d requests finished while the wallet lock was held", round, n)
+		}
 		holder.Rollback()
 		wg.Wait()
 

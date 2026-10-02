@@ -40,6 +40,7 @@ services:
   postgres_test:
     image: postgres:17-alpine
     profiles: ["test"]
+    command: ["postgres", "-c", "max_connections=300"]
     environment: *postgres-env
     ports:
       - "${POSTGRES_TEST_PORT:-5433}:5432"

@@ -90,7 +90,8 @@ func newCluster(t *testing.T, opts clusterOptions) *cluster {
 	c := &cluster{dbURL: pgtest.FreshDatabase(t), queues: sqstest.NewQueues(t, sqstest.Options{VisibilityTimeout: opts.VisibilityTimeout})}
 	c.db = pgtest.Open(t, c.dbURL)
 	c.env = map[string]string{
-		"PATH": os.Getenv("PATH"), "HOME": os.Getenv("HOME"),
+		"PATH": os.Getenv("PATH"), "GORACE": "halt_on_error=1", "DB_MAX_OPEN_CONNS": "8",
+		"AWS_CONFIG_FILE": filepath.Join(t.TempDir(), "none"), "AWS_SHARED_CREDENTIALS_FILE": filepath.Join(t.TempDir(), "none"),
 		"DATABASE_URL": c.dbURL, "OIDC_ISSUER_URL": kctest.IssuerURL(), "LOG_LEVEL": "info",
 		"AWS_ACCESS_KEY_ID": "test", "AWS_SECRET_ACCESS_KEY": "test", "AWS_REGION": sqstest.Region,
 		"SQS_ENDPOINT": sqstest.Endpoint(), "SQS_INPUT_QUEUE": c.queues.Input.Name,
@@ -106,6 +107,11 @@ func newCluster(t *testing.T, opts clusterOptions) *cluster {
 	t.Cleanup(func() {
 		for _, p := range c.procs {
 			p.kill(t)
+		}
+		for _, p := range c.procs {
+			if strings.Contains(p.tail(100000), "WARNING: DATA RACE") {
+				t.Errorf("%s reported a data race", p.name)
+			}
 		}
 		if t.Failed() {
 			for _, p := range c.procs {
@@ -160,7 +166,7 @@ func (c *cluster) start(t *testing.T, name string, env map[string]string) *proc 
 			t.Fatalf("%s exited with %d before becoming ready:\n%s", name, p.code, p.tail(40))
 		default:
 		}
-		resp, err := http.Get(p.url() + "/health/ready")
+		resp, err := probeClient.Get(p.url() + "/health/ready")
 		if err != nil {
 			return false
 		}
@@ -238,7 +244,7 @@ func (p *proc) waitExit(t *testing.T, timeout time.Duration) int {
 // metric returns the sum of a counter (all label sets) from /metrics.
 func (p *proc) metric(t *testing.T, name string) float64 {
 	t.Helper()
-	resp, err := http.Get(p.url() + "/metrics")
+	resp, err := probeClient.Get(p.url() + "/metrics")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,6 +282,8 @@ func eventually(t *testing.T, timeout time.Duration, what string, cond func() bo
 // ---- HTTP and SQS helpers ----
 
 type wallet struct{ id, player string }
+
+var probeClient = &http.Client{Timeout: 5 * time.Second}
 
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
