@@ -108,7 +108,7 @@ func (r *OutboxRepository) Reschedule(ctx context.Context, id uuid.UUID, owner s
 	if len(lastError) > maxLastError {
 		lastError = lastError[:maxLastError]
 	}
-	lastError = strings.ToValidUTF8(lastError, "?")
+	lastError = strings.ReplaceAll(strings.ToValidUTF8(lastError, "?"), "\x00", "")
 	res := conn(ctx, r.db).Exec(`
 UPDATE outbox_events
    SET next_attempt_at = now() + make_interval(secs => ?), locked_by = NULL, locked_until = NULL, last_error = ?

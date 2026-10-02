@@ -103,29 +103,82 @@ func TestRelayPublishesCommittedEventsOnce(t *testing.T) {
 	}
 }
 
+// ownerPublisher tags every publication with its relay and makes each relay's
+// first publish wait until all relays hold a batch, so the claims provably overlap.
+type ownerPublisher struct {
+	owner   string
+	rec     *recordingPublisher
+	mu      *sync.Mutex
+	by      map[uuid.UUID][]string
+	ready   *sync.WaitGroup
+	release chan struct{}
+	once    sync.Once
+	t       *testing.T
+}
+
+func (p *ownerPublisher) Publish(ctx context.Context, e app.OutboxEvent) error {
+	p.once.Do(func() {
+		p.ready.Done()
+		select {
+		case <-p.release:
+		case <-time.After(10 * time.Second):
+			p.t.Error("relays never overlapped")
+		}
+	})
+	p.mu.Lock()
+	p.by[e.ID] = append(p.by[e.ID], p.owner)
+	p.mu.Unlock()
+	return p.rec.Publish(ctx, e)
+}
+
 func TestConcurrentRelaysClaimDisjointEvents(t *testing.T) {
 	h := apptest.NewIsolated(t)
 	ids := produce(t, h, 15)
-	pub := &recordingPublisher{}
-	relays := []*app.OutboxRelay{newRelay(t, h, pub, "relay-a", 30*time.Second), newRelay(t, h, pub, "relay-b", 30*time.Second)}
+	rec := &recordingPublisher{}
+	var mu sync.Mutex
+	by := map[uuid.UUID][]string{}
+	owners := []string{"relay-a", "relay-b", "relay-c"}
+	var ready sync.WaitGroup
+	ready.Add(len(owners))
+	release := make(chan struct{})
+	start := make(chan struct{})
+	go func() { ready.Wait(); close(release) }()
 	var wg sync.WaitGroup
-	for _, r := range relays {
+	for _, o := range owners {
+		pub := &ownerPublisher{owner: o, rec: rec, mu: &mu, by: by, ready: &ready, release: release, t: t}
+		r, err := app.NewOutboxRelay(h.Outbox, pub, h.Deps.Clock, h.Metrics, slog.New(slog.DiscardHandler), app.RelaySettings{
+			Owner: o, BatchSize: 2, Lease: 30 * time.Second, RetryBaseDelay: time.Second, RetryMaxDelay: 4 * time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			<-start
 			for {
 				n, err := r.RunOnce(context.Background())
-				if err != nil || n == 0 {
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if n == 0 {
 					return
 				}
 			}
 		}()
 	}
+	close(start)
 	wg.Wait()
+	publishers := map[string]bool{}
 	for _, id := range ids {
-		if pub.sent[id] != 1 {
-			t.Fatalf("event %s published %d times, want exactly once", id, pub.sent[id])
+		if len(by[id]) != 1 || rec.sent[id] != 1 {
+			t.Fatalf("event %s published by %v (%d sends), want exactly once", id, by[id], rec.sent[id])
 		}
+		publishers[by[id][0]] = true
+	}
+	if len(publishers) < 2 {
+		t.Fatalf("only %v published; no contention", publishers)
 	}
 }
 
@@ -190,5 +243,19 @@ func TestExpiredLeaseIsRepublishedWithSameEventID(t *testing.T) {
 		if ok, err := h.Outbox.MarkPublished(context.Background(), id, "relay-a"); err != nil || ok {
 			t.Fatalf("stale owner mark = %v %v, want false", ok, err)
 		}
+	}
+}
+
+func TestRescheduleStripsNULFromError(t *testing.T) {
+	h := apptest.NewIsolated(t)
+	ids := produce(t, h, 1)
+	pub := &recordingPublisher{fail: errors.New("bad\x00byte")}
+	relay := newRelay(t, h, pub, "relay-a", 30*time.Second)
+	if _, err := relay.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s := stateOf(t, h, ids[0])
+	if s.LockedBy != nil || s.LastError == nil || *s.LastError != "badbyte" {
+		t.Fatalf("state = %+v, want rescheduled with NUL stripped", s)
 	}
 }
