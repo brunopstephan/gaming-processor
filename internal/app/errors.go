@@ -2,7 +2,10 @@
 // depend on. Adapters translate their failures into the errors below.
 package app
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	// ErrNotFound reports a missing row.
@@ -10,7 +13,9 @@ var (
 	// ErrConflict reports a uniqueness violation; the message names the constraint.
 	ErrConflict = errors.New("app: conflict")
 	// ErrVersionConflict reports a lost race on an optimistic version guard.
-	ErrVersionConflict = errors.New("app: concurrent update")
+	// It also matches ErrTransient: the caller should retry, never record a
+	// permanent failure.
+	ErrVersionConflict = fmt.Errorf("app: concurrent update: %w", ErrTransient)
 	// ErrTransient reports a temporary infrastructure failure worth retrying
 	// (connection loss, lock or statement timeout, serialization, deadlock).
 	ErrTransient = errors.New("app: transient infrastructure failure")

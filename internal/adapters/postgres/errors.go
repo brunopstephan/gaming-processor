@@ -26,7 +26,9 @@ var transientCodes = map[string]bool{
 
 // mapError classifies database errors into app sentinels while keeping the
 // original error in the chain. Unknown errors are returned unchanged and are
-// treated as permanent by callers.
+// treated as permanent by callers. Context cancellation and deadline expiry
+// are transient: they say nothing about the request itself, so they must never
+// lead to a permanent FAILED outcome.
 func mapError(err error) error {
 	if err == nil {
 		return nil
@@ -54,7 +56,8 @@ func mapError(err error) error {
 	if errors.As(err, &connErr) || errors.As(err, &netErr) ||
 		errors.Is(err, driver.ErrBadConn) ||
 		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, pgconn.ErrConnClosed) || errors.Is(err, sql.ErrConnDone) || errors.Is(err, context.DeadlineExceeded) {
+		errors.Is(err, pgconn.ErrConnClosed) || errors.Is(err, sql.ErrConnDone) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled) {
 		return fmt.Errorf("%w: %w", app.ErrTransient, err)
 	}
 	return err

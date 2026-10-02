@@ -38,6 +38,9 @@ func TestMapError(t *testing.T) {
 		{"connection exception class", pg("08006"), app.ErrTransient},
 		{"bad conn", driver.ErrBadConn, app.ErrTransient},
 		{"deadline", context.DeadlineExceeded, app.ErrTransient},
+		{"canceled", context.Canceled, app.ErrTransient},
+		{"wrapped canceled", fmt.Errorf("w: %w", context.Canceled), app.ErrTransient},
+		{"version conflict", app.ErrVersionConflict, app.ErrTransient},
 		{"eof", io.EOF, app.ErrTransient},
 		{"unexpected eof", io.ErrUnexpectedEOF, app.ErrTransient},
 		{"pgconn closed", pgconn.ErrConnClosed, app.ErrTransient},
@@ -59,7 +62,7 @@ func TestMapError(t *testing.T) {
 		})
 	}
 
-	for _, permanent := range []error{pg("23514"), pg("42501"), pg("P0001"), errors.New("boom"), context.Canceled} {
+	for _, permanent := range []error{pg("23514"), pg("42501"), pg("P0001"), errors.New("boom")} {
 		got := mapError(permanent)
 		if errors.Is(got, app.ErrTransient) || errors.Is(got, app.ErrConflict) || errors.Is(got, app.ErrNotFound) {
 			t.Errorf("mapError(%v) = %v, want unclassified", permanent, got)
