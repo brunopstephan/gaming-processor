@@ -80,3 +80,13 @@ type outboxEventModel struct {
 }
 
 func (outboxEventModel) TableName() string { return "outbox_events" }
+
+type inboxMessageModel struct {
+	ConsumerName string    `gorm:"column:consumer_name;primaryKey"`
+	MessageID    string    `gorm:"column:message_id;primaryKey"`
+	PayloadHash  string    `gorm:"column:payload_hash"`
+	ReceivedAt   time.Time `gorm:"column:received_at"`
+	ProcessedAt  time.Time `gorm:"column:processed_at"`
+}
+
+func (inboxMessageModel) TableName() string { return "inbox_messages" }

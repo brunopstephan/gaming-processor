@@ -24,6 +24,13 @@ type Metrics struct {
 	conflicts    *prometheus.CounterVec
 	processing   *prometheus.HistogramVec
 	divergences  prometheus.Counter
+
+	inboxDuplicates  prometheus.Counter
+	sqsRetries       prometheus.Counter
+	sqsDLQ           *prometheus.CounterVec
+	outboxLag        prometheus.Histogram
+	outboxAttempts   *prometheus.CounterVec
+	referenceRetries prometheus.Counter
 }
 
 var _ app.Metrics = (*Metrics)(nil)
@@ -53,10 +60,30 @@ func New() *Metrics {
 		divergences: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "reconciliation_divergences_total", Help: "Reconciliations whose ledger disagrees with the balance.",
 		}),
+		inboxDuplicates: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "inbox_duplicates_total", Help: "SQS messages dropped because the inbox already handled them.",
+		}),
+		sqsRetries: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "sqs_retries_total", Help: "SQS messages left for redelivery after a transient failure.",
+		}),
+		sqsDLQ: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "sqs_dlq_total", Help: "SQS messages sent to the dead-letter queue by reason.",
+		}, []string{"reason"}),
+		outboxLag: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name: "outbox_lag_seconds", Help: "Delay between an event's occurrence and its publication.",
+			Buckets: []float64{.05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 300},
+		}),
+		outboxAttempts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "outbox_publish_attempts_total", Help: "Outbox publish attempts by result.",
+		}, []string{"result"}),
+		referenceRetries: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "reference_retries_total", Help: "Worker attempts that left an operation waiting for its reference.",
+		}),
 	}
 	m.Registry.MustRegister(
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.HTTPRequests, m.HTTPDuration, m.transactions, m.replays, m.conflicts, m.processing, m.divergences,
+		m.inboxDuplicates, m.sqsRetries, m.sqsDLQ, m.outboxLag, m.outboxAttempts, m.referenceRetries,
 	)
 	return m
 }
@@ -81,6 +108,24 @@ func (m *Metrics) ProcessingDuration(channel app.Channel, d time.Duration) {
 
 // ReconciliationDivergence implements app.Metrics.
 func (m *Metrics) ReconciliationDivergence() { m.divergences.Inc() }
+
+// InboxDuplicate implements app.Metrics.
+func (m *Metrics) InboxDuplicate() { m.inboxDuplicates.Inc() }
+
+// OutboxPublishAttempt implements app.Metrics.
+func (m *Metrics) OutboxPublishAttempt(result string) { m.outboxAttempts.WithLabelValues(result).Inc() }
+
+// OutboxLag implements app.Metrics.
+func (m *Metrics) OutboxLag(d time.Duration) { m.outboxLag.Observe(d.Seconds()) }
+
+// ReferenceRetry implements app.Metrics.
+func (m *Metrics) ReferenceRetry() { m.referenceRetries.Inc() }
+
+// SQSRetry counts a message left for redelivery.
+func (m *Metrics) SQSRetry() { m.sqsRetries.Inc() }
+
+// SQSDeadLetter counts a message sent to the DLQ; reason is a failure code.
+func (m *Metrics) SQSDeadLetter(reason string) { m.sqsDLQ.WithLabelValues(reason).Inc() }
 
 // Module provides *Metrics and app.Metrics.
 var Module = fx.Module("metrics",

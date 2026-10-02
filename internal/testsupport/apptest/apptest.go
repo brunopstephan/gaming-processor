@@ -31,6 +31,7 @@ type Harness struct {
 	Transactions *postgres.TransactionRepository
 	Ledger       *postgres.LedgerRepository
 	Outbox       *postgres.OutboxRepository
+	Inbox        *postgres.InboxRepository
 	Metrics      *RecordingMetrics
 }
 
@@ -42,7 +43,18 @@ func Clock() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
 func New(t testing.TB) *Harness {
 	t.Helper()
 	pgtest.AppDB(t)
-	dbCfg := config.Database{URL: pgtest.AppURL(), MaxOpenConns: 40, LockTimeout: 5 * time.Second, StatementTimeout: 10 * time.Second}
+	return newHarness(t, pgtest.AppURL())
+}
+
+// NewIsolated is New over a fresh database of its own (pgtest.FreshDatabase).
+func NewIsolated(t testing.TB) *Harness {
+	t.Helper()
+	return newHarness(t, pgtest.FreshDatabase(t))
+}
+
+func newHarness(t testing.TB, url string) *Harness {
+	t.Helper()
+	dbCfg := config.Database{URL: url, MaxOpenConns: 40, LockTimeout: 5 * time.Second, StatementTimeout: 10 * time.Second}
 	db, err := postgres.Open(dbCfg)
 	if err != nil {
 		t.Fatal(err)
@@ -60,6 +72,7 @@ func New(t testing.TB) *Harness {
 		Transactions: postgres.NewTransactionRepository(db),
 		Ledger:       postgres.NewLedgerRepository(db),
 		Outbox:       postgres.NewOutboxRepository(db),
+		Inbox:        postgres.NewInboxRepository(db),
 		Metrics:      NewRecordingMetrics(),
 	}
 	h.Deps = app.Deps{
@@ -176,3 +189,15 @@ func (m *RecordingMetrics) ProcessingDuration(channel app.Channel, _ time.Durati
 
 // ReconciliationDivergence implements app.Metrics.
 func (m *RecordingMetrics) ReconciliationDivergence() { m.inc("divergence") }
+
+// InboxDuplicate implements app.Metrics.
+func (m *RecordingMetrics) InboxDuplicate() { m.inc("inbox_duplicate") }
+
+// OutboxPublishAttempt implements app.Metrics.
+func (m *RecordingMetrics) OutboxPublishAttempt(result string) { m.inc("outbox:" + result) }
+
+// OutboxLag implements app.Metrics.
+func (m *RecordingMetrics) OutboxLag(time.Duration) { m.inc("outbox_lag") }
+
+// ReferenceRetry implements app.Metrics.
+func (m *RecordingMetrics) ReferenceRetry() { m.inc("reference_retry") }

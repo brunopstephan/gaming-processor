@@ -5,10 +5,18 @@ package pgtest
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/golang-migrate/migrate/v4"
+	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -64,6 +72,32 @@ func Open(t testing.TB, rawURL string) *gorm.DB {
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return db
+}
+
+// FreshDatabase creates a new database migrated to the latest version,
+// dropped at cleanup, and returns its wallet_app URL. Tests whose code claims
+// rows globally (outbox relay, reference worker) use it so leftovers of other
+// tests are never claimed.
+func FreshDatabase(t testing.TB) string {
+	t.Helper()
+	owner := OwnerDB(t)
+	name := fmt.Sprintf("wallet_t_%d", time.Now().UnixNano())
+	if err := owner.Exec("CREATE DATABASE " + name).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { owner.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)") })
+	_, file, _, _ := runtime.Caller(0)
+	migrations := filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations")
+	ownerURL := strings.Replace(WithDatabase(OwnerURL(), name), "postgres://", "pgx5://", 1)
+	m, err := migrate.New("file://"+migrations, ownerURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	if err := m.Up(); err != nil {
+		t.Fatalf("migrate fresh database: %v", err)
+	}
+	return WithDatabase(AppURL(), name)
 }
 
 // RequirePgError fails unless err carries a postgres error with code and,

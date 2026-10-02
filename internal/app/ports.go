@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -76,4 +77,22 @@ type LedgerRepository interface {
 // changes that produced them.
 type OutboxRepository interface {
 	Append(ctx context.Context, envs ...events.Envelope) error
+}
+
+// InboxMessage records that a consumer handled a message. It is written in
+// the transaction of the message's effects and identifies redeliveries.
+type InboxMessage struct {
+	Consumer    string
+	MessageID   string
+	PayloadHash string
+	ReceivedAt  time.Time
+	ProcessedAt time.Time
+}
+
+// InboxRepository stores handled messages.
+type InboxRepository interface {
+	// Get returns the handled message; ErrNotFound if unknown.
+	Get(ctx context.Context, consumer, messageID string) (InboxMessage, error)
+	// Insert records m unless (consumer, messageId) exists; inserted=false reports that.
+	Insert(ctx context.Context, m InboxMessage) (inserted bool, err error)
 }

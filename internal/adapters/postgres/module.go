@@ -22,6 +22,7 @@ var Module = fx.Module("postgres",
 		fx.Annotate(NewTransactionRepository, fx.As(new(app.TransactionRepository))),
 		fx.Annotate(NewLedgerRepository, fx.As(new(app.LedgerRepository))),
 		fx.Annotate(NewOutboxRepository, fx.As(new(app.OutboxRepository))),
+		fx.Annotate(NewInboxRepository, fx.As(new(app.InboxRepository))),
 		fx.Annotate(newHealthCheck, fx.ResultTags(`group:"readiness"`)),
 	),
 )
