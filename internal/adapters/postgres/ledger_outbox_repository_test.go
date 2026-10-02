@@ -73,7 +73,9 @@ func TestBetPersistsAtomically(t *testing.T) {
 	}
 
 	var ledgerCount int64
-	db.Table("wallet_ledger_entries").Where("transaction_id = ?", bet.ID()).Count(&ledgerCount)
+	if err := db.Table("wallet_ledger_entries").Where("transaction_id = ?", bet.ID()).Count(&ledgerCount).Error; err != nil {
+		t.Fatal(err)
+	}
 	if ledgerCount != 1 {
 		t.Fatalf("ledger entries = %d, want 1", ledgerCount)
 	}
@@ -143,7 +145,9 @@ func TestLedgerAppendRollsBackWithTransaction(t *testing.T) {
 		t.Fatalf("wallet must not exist after rollback: %v", err)
 	}
 	var n int64
-	db.Table("wallet_ledger_entries").Where("transaction_id = ?", bet.ID()).Count(&n)
+	if err := db.Table("wallet_ledger_entries").Where("transaction_id = ?", bet.ID()).Count(&n).Error; err != nil {
+		t.Fatal(err)
+	}
 	if n != 0 {
 		t.Fatal("ledger entry must not survive the rollback")
 	}

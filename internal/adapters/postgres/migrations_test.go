@@ -12,6 +12,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/google/uuid"
 
 	"github.com/brunopstephan/backend-challenge-go/internal/testsupport/pgtest"
 )
@@ -74,4 +75,12 @@ func TestMigrationsUpDownUp(t *testing.T) {
 	if got := publicTables(t, url); !slices.Equal(got, want) {
 		t.Fatalf("tables after second up = %v, want %v", got, want)
 	}
+
+	// Prove the re-applied schema is usable and enforces its constraints.
+	fresh := pgtest.Open(t, url)
+	if err := fresh.Table("wallets").Create(walletRow(uuid.New(), "BRL", 0)).Error; err != nil {
+		t.Fatalf("insert wallet on fresh schema: %v", err)
+	}
+	pgtest.RequirePgError(t, fresh.Table("wallets").Create(walletRow(uuid.New(), "BRL", -1)).Error,
+		"23514", "wallets_balance_minor_check")
 }
