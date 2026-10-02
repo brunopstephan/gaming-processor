@@ -22,7 +22,7 @@ CREATE TABLE wager_transactions (
     round_id                          varchar(255),
     game_id                           varchar(255),
     reference_external_transaction_id varchar(255),
-    reference_transaction_id          uuid         REFERENCES wager_transactions (id),
+    reference_transaction_id          uuid,
     reference_kind                    text         CONSTRAINT wager_transactions_reference_kind_check
                                                    CHECK (reference_kind IN ('OPENING', 'BET', 'WIN', 'LOSS', 'REFUND', 'ROLLBACK')),
     failure_code                      text,
@@ -61,9 +61,25 @@ CREATE TABLE wager_transactions (
         kind NOT IN ('REFUND', 'ROLLBACK') OR reference_external_transaction_id IS NOT NULL
     ),
     CONSTRAINT wager_transactions_processed_reversal_resolved CHECK (
-        status <> 'PROCESSED' OR kind NOT IN ('REFUND', 'ROLLBACK')
+        status <> 'PROCESSED'
+        OR NOT (kind IN ('REFUND', 'ROLLBACK') OR (kind = 'WIN' AND reference_external_transaction_id IS NOT NULL))
         OR (reference_transaction_id IS NOT NULL AND reference_kind IS NOT NULL)
     ),
+    CONSTRAINT wager_transactions_rejected_code CHECK (
+        status <> 'REJECTED' OR failure_code IN (
+            'INSUFFICIENT_FUNDS', 'INSUFFICIENT_FUNDS_FOR_REVERSAL', 'WALLET_NOT_FOUND',
+            'WALLET_PLAYER_MISMATCH', 'CURRENCY_MISMATCH', 'REFERENCE_NOT_FOUND',
+            'REFERENCE_NOT_PROCESSED', 'REFERENCE_KIND_INVALID', 'REFERENCE_MISMATCH',
+            'AMOUNT_MISMATCH', 'REFERENCE_ALREADY_REVERSED')
+    ),
+    CONSTRAINT wager_transactions_reference_not_allowed CHECK (
+        kind NOT IN ('BET', 'LOSS') OR reference_external_transaction_id IS NULL
+    ),
+    -- Lets reference_kind be verified against the referenced row's real kind.
+    CONSTRAINT wager_transactions_id_kind_key UNIQUE (id, kind),
+    CONSTRAINT wager_transactions_reference_fkey
+        FOREIGN KEY (reference_transaction_id, reference_kind)
+        REFERENCES wager_transactions (id, kind) MATCH FULL,
     CONSTRAINT wager_transactions_provider_idempotency_key UNIQUE (provider_id, idempotency_key),
     CONSTRAINT wager_transactions_provider_external_id UNIQUE (provider_id, external_transaction_id)
 );

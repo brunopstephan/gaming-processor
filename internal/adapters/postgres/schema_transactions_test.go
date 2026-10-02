@@ -5,6 +5,7 @@ package postgres
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -58,6 +59,11 @@ func TestTransactionShapeConstraints(t *testing.T) {
 	}
 	if err := insertTx(db, opening); err != nil {
 		t.Fatalf("valid opening: %v", err)
+	}
+
+	refBet := processed(externalRow(w, p, "BET", 400), 100)
+	if err := insertTx(db, refBet); err != nil {
+		t.Fatalf("reference bet: %v", err)
 	}
 
 	tests := []struct {
@@ -114,6 +120,31 @@ func TestTransactionShapeConstraints(t *testing.T) {
 			r["reference_external_transaction_id"] = "x"
 			return r
 		}, "23514", "wager_transactions_processed_reversal_resolved"},
+		{"processed WIN with unresolved reference", func() map[string]any {
+			r := processed(externalRow(w, p, "WIN", 100), 100)
+			r["reference_external_transaction_id"] = "x"
+			return r
+		}, "23514", "wager_transactions_processed_reversal_resolved"},
+		{"rejected with infrastructure code", func() map[string]any {
+			r := externalRow(w, p, "BET", 100)
+			r["status"], r["failure_code"], r["processed_at"] = "REJECTED", "INFRASTRUCTURE_FAILURE", schemaNow
+			return r
+		}, "23514", "wager_transactions_rejected_code"},
+		{"bet with reference", func() map[string]any {
+			r := externalRow(w, p, "BET", 100)
+			r["reference_external_transaction_id"] = "x"
+			return r
+		}, "23514", "wager_transactions_reference_not_allowed"},
+		{"reference kind differs from referenced row", func() map[string]any {
+			r := reversal(w, p, "REFUND", refBet)
+			r["reference_kind"] = "WIN"
+			return r
+		}, "23503", "wager_transactions_reference_fkey"},
+		{"reference id without reference kind", func() map[string]any {
+			r := reversal(w, p, "REFUND", refBet)
+			delete(r, "reference_kind")
+			return r
+		}, "23503", "wager_transactions_reference_fkey"},
 		// Also fails status_shape; which violation is reported first is not
 		// guaranteed, so only the code is asserted.
 		{"unknown status", func() map[string]any {
@@ -184,11 +215,18 @@ func TestReversalUniqueness(t *testing.T) {
 	if err := insertTx(db, rejected); err != nil {
 		t.Fatalf("rejected reversals do not count: %v", err)
 	}
-	if err := insertTx(db, processed(reversal(w, p, "REFUND", bet), 10000)); err != nil {
+	firstRefund := processed(reversal(w, p, "REFUND", bet), 10000)
+	if err := insertTx(db, firstRefund); err != nil {
 		t.Fatalf("first refund: %v", err)
+	}
+	if err := insertTx(db, processed(reversal(w, p, "ROLLBACK", firstRefund), 7000)); err != nil {
+		t.Fatalf("rollback of a processed refund is allowed: %v", err)
 	}
 	err := insertTx(db, processed(reversal(w, p, "ROLLBACK", bet), 13000))
 	pgtest.RequirePgError(t, err, "23505", "wager_transactions_one_reversal_per_bet")
+	// Same kind violates both unique indexes; only the code is asserted.
+	err = insertTx(db, processed(reversal(w, p, "REFUND", bet), 13000))
+	pgtest.RequirePgError(t, err, "23505", "")
 
 	if err := insertTx(db, processed(reversal(w, p, "ROLLBACK", win), 5000)); err != nil {
 		t.Fatalf("first rollback of win: %v", err)
@@ -217,6 +255,44 @@ func TestTransactionUpdateGuard(t *testing.T) {
 
 	err = update(pending["id"], map[string]any{"amount_minor": int64(999)})
 	pgtest.RequirePgError(t, err, "23514", "")
+
+	// Positive transitions out of PENDING_REFERENCE.
+	target := processed(externalRow(w, p, "BET", 100), 0)
+	if err := insertTx(db, target); err != nil {
+		t.Fatal(err)
+	}
+	pendingRef := func() map[string]any {
+		r := externalRow(w, p, "REFUND", 100)
+		r["reference_external_transaction_id"] = target["external_transaction_id"]
+		r["status"], r["next_attempt_at"], r["attempts"] = "PENDING_REFERENCE", schemaNow, 1
+		if err := insertTx(db, r); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	retry := pendingRef()
+	if err := update(retry["id"], map[string]any{"attempts": 2, "next_attempt_at": schemaNow.Add(time.Minute)}); err != nil {
+		t.Fatalf("same-status retry: %v", err)
+	}
+	resolved := pendingRef()
+	if err := update(resolved["id"], map[string]any{
+		"status": "PROCESSED", "reference_transaction_id": target["id"], "reference_kind": "BET",
+		"result_balance_minor": int64(100), "processed_at": schemaNow, "next_attempt_at": nil,
+	}); err != nil {
+		t.Fatalf("PENDING_REFERENCE -> PROCESSED: %v", err)
+	}
+	rejected := pendingRef()
+	if err := update(rejected["id"], map[string]any{
+		"status": "REJECTED", "failure_code": "REFERENCE_NOT_FOUND", "processed_at": schemaNow,
+	}); err != nil {
+		t.Fatalf("PENDING_REFERENCE -> REJECTED: %v", err)
+	}
+	failed := pendingRef()
+	if err := update(failed["id"], map[string]any{
+		"status": "FAILED", "failure_code": "INFRASTRUCTURE_FAILURE", "processed_at": schemaNow,
+	}); err != nil {
+		t.Fatalf("PENDING_REFERENCE -> FAILED: %v", err)
+	}
 
 	done := processed(externalRow(w, p, "BET", 100), 0)
 	if err := insertTx(db, done); err != nil {
