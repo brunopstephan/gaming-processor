@@ -29,6 +29,9 @@ var (
 	// ErrExternalTransactionConflict reports an external transaction already
 	// registered under another idempotency key.
 	ErrExternalTransactionConflict = errors.New("app: external transaction already registered under another idempotency key")
+	// ErrInsideTransaction reports WageringService.Process called with a
+	// context that already carries a transaction.
+	ErrInsideTransaction = errors.New("app: Process must not run inside a transaction; use alongside")
 	// ErrInvalidCursor reports an undecodable ledger cursor.
 	ErrInvalidCursor = errors.New("app: invalid ledger cursor")
 	// ErrInvalidLimit reports a ledger page size outside 1..MaxLedgerLimit.

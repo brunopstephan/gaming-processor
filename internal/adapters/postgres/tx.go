@@ -53,6 +53,12 @@ func (m *TxManager) WithinSnapshot(ctx context.Context, fn func(ctx context.Cont
 	return m.run(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, fn)
 }
 
+// InTx reports whether ctx carries a transaction.
+func (m *TxManager) InTx(ctx context.Context) bool {
+	_, ok := txFrom(ctx)
+	return ok
+}
+
 func (m *TxManager) run(ctx context.Context, opts *sql.TxOptions, fn func(ctx context.Context) error) error {
 	var options []*sql.TxOptions
 	if opts != nil {

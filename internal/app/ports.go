@@ -24,6 +24,8 @@ type TxManager interface {
 	// read sees one consistent snapshot and writes are refused. It never joins
 	// an outer transaction.
 	WithinSnapshot(ctx context.Context, fn func(ctx context.Context) error) error
+	// InTx reports whether ctx carries a transaction.
+	InTx(ctx context.Context) bool
 }
 
 // WalletRepository persists the Wallet aggregate.

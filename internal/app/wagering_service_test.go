@@ -5,12 +5,16 @@ package app_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/brunopstephan/backend-challenge-go/internal/app"
+	"github.com/brunopstephan/backend-challenge-go/internal/domain/events"
 	"github.com/brunopstephan/backend-challenge-go/internal/domain/money"
 	"github.com/brunopstephan/backend-challenge-go/internal/domain/wagering"
 	"github.com/brunopstephan/backend-challenge-go/internal/domain/wallet"
@@ -187,21 +191,61 @@ func TestAlongsideSharesTheTransaction(t *testing.T) {
 	w := h.OpenWallet(t, "100.00")
 	ctx := context.Background()
 
+	zero, err := money.Parse("0.00", "BRL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEvent := func(ctx context.Context, id uuid.UUID) error {
+		env, err := events.NewEnvelope(id, events.WalletBalanceChanged{
+			WalletID: w.ID(), TransactionID: uuid.New(), Direction: "DEBIT",
+			Money: zero, BalanceBefore: zero, BalanceAfter: zero, WalletVersion: 1,
+		}, "corr-hook", "", time.Now())
+		if err != nil {
+			return err
+		}
+		return h.Outbox.Append(ctx, env)
+	}
+	eventExists := func(id uuid.UUID) bool {
+		var n int64
+		if err := h.DB.Raw(`SELECT count(*) FROM outbox_events WHERE id = ?`, id).Scan(&n).Error; err != nil {
+			t.Fatal(err)
+		}
+		return n == 1
+	}
+
 	calls := 0
-	ok := func(context.Context) error { calls++; return nil }
+	okEvent := uuid.Must(uuid.NewV7())
+	ok := func(ctx context.Context) error { calls++; return appendEvent(ctx, okEvent) }
 	cmd := apptest.Command(t, w, "provider-a", "BET", "10.00", "")
 	if _, err := svc.Process(ctx, cmd, app.Meta{}, ok); err != nil || calls != 1 {
 		t.Fatalf("hook on first processing: calls %d err %v", calls, err)
 	}
-	if res, err := svc.Process(ctx, cmd, app.Meta{}, ok); err != nil || !res.Replay || calls != 2 {
+	if !eventExists(okEvent) {
+		t.Fatal("the hook's outbox write must commit with the transaction")
+	}
+	replayEvent := uuid.Must(uuid.NewV7())
+	replayHook := func(ctx context.Context) error { calls++; return appendEvent(ctx, replayEvent) }
+	if res, err := svc.Process(ctx, cmd, app.Meta{}, replayHook); err != nil || !res.Replay || calls != 2 {
 		t.Fatalf("hook on replay: calls %d err %v", calls, err)
+	}
+	if !eventExists(replayEvent) {
+		t.Fatal("the hook's outbox write must commit on replay")
 	}
 
 	boom := errors.New("inbox write failed")
 	failing := apptest.Command(t, w, "provider-a", "BET", "10.00", "")
-	_, err := svc.Process(ctx, failing, app.Meta{}, func(context.Context) error { return boom })
+	failEvent := uuid.Must(uuid.NewV7())
+	_, err = svc.Process(ctx, failing, app.Meta{}, func(ctx context.Context) error {
+		if err := appendEvent(ctx, failEvent); err != nil {
+			return err
+		}
+		return boom
+	})
 	if !errors.Is(err, boom) {
 		t.Fatalf("hook error must be returned: %v", err)
+	}
+	if eventExists(failEvent) {
+		t.Fatal("hook failure must roll back the hook's outbox write")
 	}
 	if _, err := h.Transactions.FindByIdempotencyKey(ctx, "provider-a", failing.IdempotencyKey); !errors.Is(err, app.ErrNotFound) {
 		t.Fatalf("hook failure must roll back the transaction row (and must not record FAILED): %v", err)
@@ -215,5 +259,56 @@ func TestNewWageringServiceValidatesPolicy(t *testing.T) {
 	h := apptest.New(t)
 	if _, err := app.NewWageringService(h.Deps, wagering.RetryPolicy{}); err == nil {
 		t.Fatal("invalid retry policy must be rejected at construction")
+	}
+}
+
+// lookupRacy hides the row from the FIRST FindByIdempotencyKey, as if the
+// winner committed between the two lookups of Process.
+type lookupRacy struct {
+	app.TransactionRepository
+	once sync.Once
+}
+
+func (l *lookupRacy) FindByIdempotencyKey(ctx context.Context, provider, key string) (*wagering.WagerTransaction, error) {
+	hidden := false
+	l.once.Do(func() { hidden = true })
+	if hidden {
+		return nil, fmt.Errorf("%w: idempotency key %q", app.ErrNotFound, key)
+	}
+	return l.TransactionRepository.FindByIdempotencyKey(ctx, provider, key)
+}
+
+func TestLookupRaceBetweenKeyAndExternalIDIsAReplay(t *testing.T) {
+	h := apptest.New(t)
+	w := h.OpenWallet(t, "100.00")
+	cmd := apptest.Command(t, w, "provider-a", "BET", "10.00", "")
+	first := process(t, newWagering(t, h), cmd)
+
+	racyService := func() *app.WageringService {
+		d := h.Deps
+		d.Transactions = &lookupRacy{TransactionRepository: h.Transactions}
+		svc, err := app.NewWageringService(d, wagering.DefaultRetryPolicy())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return svc
+	}
+
+	res, err := racyService().Process(context.Background(), cmd, app.Meta{}, nil)
+	if err != nil || !res.Replay || res.Transaction.ID() != first.Transaction.ID() {
+		t.Fatalf("same payload through the external-id path = %+v, %v", res, err)
+	}
+
+	eleven, err := money.Parse("11.00", "BRL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := cmd
+	other.Money = eleven
+	if _, err := racyService().Process(context.Background(), other, app.Meta{}, nil); !errors.Is(err, app.ErrIdempotencyKeyConflict) {
+		t.Fatalf("different payload through the external-id path = %v, want ErrIdempotencyKeyConflict", err)
+	}
+	if balance(t, h, w.ID()) != "90.00" {
+		t.Fatal("the bet must be applied once")
 	}
 }

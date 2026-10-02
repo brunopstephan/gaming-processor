@@ -10,7 +10,9 @@ import (
 )
 
 // Module wires the use cases. It requires the persistence ports (postgres
-// module), a Metrics and a *slog.Logger from the composition root.
+// module), a Metrics and a *slog.Logger from the composition root. It also
+// provides the Clock (SystemClock); the composition root must not provide
+// another one.
 var Module = fx.Module("app",
 	fx.Provide(
 		func() Clock { return SystemClock },

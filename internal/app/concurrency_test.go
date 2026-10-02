@@ -127,25 +127,7 @@ func TestDistinctWalletsProceedWhileOneIsLocked(t *testing.T) {
 	svc := newWagering(t, h)
 	locked, free := h.OpenWallet(t, "100.00"), h.OpenWallet(t, "100.00")
 
-	holding, release := make(chan struct{}), make(chan struct{})
-	held := make(chan error, 1)
-	go func() {
-		held <- h.Tx.WithinTx(context.Background(), func(ctx context.Context) error {
-			if _, err := h.Wallets.GetForUpdate(ctx, locked.ID()); err != nil {
-				return err
-			}
-			close(holding)
-			<-release
-			return nil
-		})
-	}()
-	select {
-	case <-holding:
-	case err := <-held:
-		t.Fatalf("holder failed: %v", err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("holder never locked the wallet")
-	}
+	release := holdWalletLock(t, h, locked.ID()) // also released on cleanup
 
 	start := time.Now()
 	res := process(t, svc, apptest.Command(t, free, "provider-a", "BET", "5.00", ""))
@@ -164,7 +146,7 @@ func TestDistinctWalletsProceedWhileOneIsLocked(t *testing.T) {
 		t.Fatalf("the locked wallet must wait, got %+v", o)
 	case <-time.After(300 * time.Millisecond):
 	}
-	close(release)
+	release()
 	select {
 	case o := <-blocked:
 		if o.err != nil || o.res.Transaction.Status() != wagering.StatusProcessed {
@@ -172,9 +154,6 @@ func TestDistinctWalletsProceedWhileOneIsLocked(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the locked wallet never proceeded")
-	}
-	if err := <-held; err != nil {
-		t.Fatal(err)
 	}
 }
 

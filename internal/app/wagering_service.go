@@ -50,8 +50,22 @@ func (e *alongsideError) Unwrap() error { return e.err }
 //
 // Transient failures return an error matching ErrTransient and leave no
 // trace. alongside (may be nil) runs inside the transaction that commits the
-// outcome, including replays. Process must not be called inside a transaction.
+// outcome, including replays.
+//
+// A permanent infrastructure failure is a recorded outcome, not an error: it
+// returns err == nil with a FAILED transaction (failureCode
+// INFRASTRUCTURE_FAILURE). Callers must check the returned status, not only
+// err, to answer HTTP 500 or send the message to the SQS DLQ. If recording
+// the FAILED transaction itself fails, the returned error joins both causes
+// and matches ErrTransient when either of them is transient.
+//
+// Process must not be called inside a transaction (the caller's atomic work
+// goes in alongside): if ctx already carries one, it returns
+// ErrInsideTransaction without touching anything.
 func (s *WageringService) Process(ctx context.Context, cmd wagering.Command, meta Meta, alongside func(ctx context.Context) error) (TransactionResult, error) {
+	if s.d.Tx.InTx(ctx) {
+		return TransactionResult{}, ErrInsideTransaction
+	}
 	meta = meta.normalized()
 	start := time.Now()
 	defer func() { s.d.Metrics.ProcessingDuration(meta.Channel, time.Since(start)) }()
@@ -139,7 +153,9 @@ func (s *WageringService) replay(ctx context.Context, existing *wagering.WagerTr
 }
 
 // apply locks the wallet, lets the domain decide and persists the outcome in
-// the caller's transaction. Lock order is always wallet → transactions.
+// the caller's transaction. Lock order: the transaction row is inserted first
+// (waiting on the unique index if a concurrent request holds the same key),
+// then the wallet is row-locked, then references are read.
 func (s *WageringService) apply(ctx context.Context, t *wagering.WagerTransaction, meta Meta) error {
 	w, err := s.d.Wallets.GetForUpdate(ctx, t.WalletID())
 	switch {
@@ -176,12 +192,17 @@ func (s *WageringService) apply(ctx context.Context, t *wagering.WagerTransactio
 
 // failure classifies an error of the processing transaction, which has
 // already rolled back. Transient errors are returned for retry; nothing is
-// recorded. (Task 5 records permanent failures as FAILED.)
+// recorded. Anything else is a permanent failure and is recorded as FAILED.
 func (s *WageringService) failure(ctx context.Context, cmd wagering.Command, meta Meta, alongside func(ctx context.Context) error, err error) (TransactionResult, error) {
 	var hookErr *alongsideError
 	switch {
 	case errors.As(err, &hookErr):
 		return TransactionResult{}, err
+	case ctx.Err() != nil:
+		// The request was canceled or timed out: the rollback is not a
+		// verdict about the operation, so never record FAILED.
+		s.d.Metrics.ConcurrencyConflict(ConflictTransient)
+		return TransactionResult{}, fmt.Errorf("%w: %w", ErrTransient, ctx.Err())
 	case errors.Is(err, ErrLockTimeout):
 		s.d.Metrics.ConcurrencyConflict(ConflictLockTimeout)
 		return TransactionResult{}, err
@@ -195,7 +216,7 @@ func (s *WageringService) failure(ctx context.Context, cmd wagering.Command, met
 		// A unique index refused a write inside processing (a race the wallet
 		// lock should prevent); retrying re-reads the winner's state.
 		s.d.Metrics.ConcurrencyConflict(ConflictUnique)
-		return TransactionResult{}, fmt.Errorf("%w: %w", ErrTransient, err)
+		return TransactionResult{}, fmt.Errorf("%w: %v", ErrTransient, err)
 	}
 	return s.recordFailure(ctx, cmd, meta, alongside, err)
 }
@@ -205,13 +226,13 @@ func (s *WageringService) failure(ctx context.Context, cmd wagering.Command, met
 // The caller's alongside work commits with the FAILED record. If even this
 // write fails, both errors are returned (transient if either is).
 func (s *WageringService) recordFailure(ctx context.Context, cmd wagering.Command, meta Meta, alongside func(ctx context.Context) error, cause error) (TransactionResult, error) {
-	s.d.Log.ErrorContext(ctx, "permanent failure processing wager transaction",
-		"providerId", cmd.ProviderID, "walletId", cmd.WalletID.String(), "correlationId", meta.CorrelationID,
-		"messageId", meta.CausationID, "error", cause.Error())
 	t, err := wagering.NewExternal(newID(), cmd, s.d.Clock())
 	if err != nil {
 		return TransactionResult{}, errors.Join(cause, err)
 	}
+	s.d.Log.ErrorContext(ctx, "permanent failure processing wager transaction",
+		"transactionId", t.ID().String(), "providerId", cmd.ProviderID, "walletId", cmd.WalletID.String(),
+		"correlationId", meta.CorrelationID, "messageId", meta.CausationID, "error", cause.Error())
 	if err := t.MarkFailed(s.d.Clock()); err != nil {
 		return TransactionResult{}, errors.Join(cause, err)
 	}

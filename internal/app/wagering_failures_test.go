@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/brunopstephan/backend-challenge-go/internal/app"
 	"github.com/brunopstephan/backend-challenge-go/internal/domain/wagering"
@@ -121,6 +124,9 @@ func TestTransientFailuresLeaveNoTrace(t *testing.T) {
 			if _, err := h.Transactions.FindByIdempotencyKey(ctx, "provider-a", cmd.IdempotencyKey); !errors.Is(err, app.ErrNotFound) {
 				t.Fatalf("a transient failure must leave no row (no FAILED): %v", err)
 			}
+			if tc.name == "unique" && errors.Is(err, app.ErrConflict) {
+				t.Fatalf("a transient unique conflict must not keep ErrConflict in the chain: %v", err)
+			}
 			if h.Metrics.Count(tc.metric) == 0 {
 				t.Fatalf("metric %s not recorded", tc.metric)
 			}
@@ -164,5 +170,128 @@ func TestAlongsideRunsInTheFailedTransaction(t *testing.T) {
 		func(context.Context) error { calls++; return nil })
 	if err != nil || res.Transaction.Status() != wagering.StatusFailed || calls != 1 {
 		t.Fatalf("status %v calls %d err %v; the hook must run once, with the FAILED record", res.Transaction, calls, err)
+	}
+}
+
+// holdWalletLock locks the wallet row in a helper transaction until the
+// returned release func is called (also on cleanup).
+func holdWalletLock(t *testing.T, h *apptest.Harness, id uuid.UUID) (release func()) {
+	t.Helper()
+	holding, rel := make(chan struct{}), make(chan struct{})
+	held := make(chan error, 1)
+	go func() {
+		held <- h.Tx.WithinTx(context.Background(), func(ctx context.Context) error {
+			if _, err := h.Wallets.GetForUpdate(ctx, id); err != nil {
+				return err
+			}
+			close(holding)
+			<-rel
+			return nil
+		})
+	}()
+	select {
+	case <-holding:
+	case err := <-held:
+		t.Fatalf("holder failed: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("holder never locked the wallet")
+	}
+	var once sync.Once
+	release = func() { once.Do(func() { close(rel) }) }
+	t.Cleanup(release)
+	return release
+}
+
+func TestCancellationWhileWaitingForTheWalletLockLeavesNoTrace(t *testing.T) {
+	h := apptest.New(t)
+	svc := newWagering(t, h)
+	w := h.OpenWallet(t, "100.00")
+	cmd := apptest.Command(t, w, "provider-a", "BET", "10.00", "")
+	release := holdWalletLock(t, h, w.ID())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.Process(ctx, cmd, app.Meta{}, nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("Process must wait for the wallet lock, returned %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	cancel()
+	release()
+	select {
+	case err := <-done:
+		if !errors.Is(err, app.ErrTransient) {
+			t.Fatalf("error = %v, want ErrTransient", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Process did not return after cancellation")
+	}
+	if _, err := h.Transactions.FindByIdempotencyKey(context.Background(), "provider-a", cmd.IdempotencyKey); !errors.Is(err, app.ErrNotFound) {
+		t.Fatalf("a canceled request must leave no row: %v", err)
+	}
+	if balance(t, h, w.ID()) != "100.00" {
+		t.Fatal("balance must be unchanged")
+	}
+}
+
+func TestCancellationInsideAlongsideIsNeverFailed(t *testing.T) {
+	h := apptest.New(t)
+	svc := newWagering(t, h)
+	w := h.OpenWallet(t, "100.00")
+	cmd := apptest.Command(t, w, "provider-a", "BET", "10.00", "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type result struct {
+		res app.TransactionResult
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		res, err := svc.Process(ctx, cmd, app.Meta{}, func(context.Context) error { cancel(); return nil })
+		done <- result{res, err}
+	}()
+	var r result
+	select {
+	case r = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Process did not return")
+	}
+	if !errors.Is(r.err, app.ErrTransient) {
+		t.Fatalf("error = %v, want ErrTransient", r.err)
+	}
+	stored, err := h.Transactions.FindByIdempotencyKey(context.Background(), "provider-a", cmd.IdempotencyKey)
+	switch {
+	case errors.Is(err, app.ErrNotFound): // rolled back
+	case err != nil:
+		t.Fatal(err)
+	case stored.Status() != wagering.StatusProcessed:
+		t.Fatalf("stored status %s: a canceled request must be rolled back or PROCESSED, never FAILED", stored.Status())
+	}
+}
+
+func TestProcessInsideATransactionIsRefused(t *testing.T) {
+	h := apptest.New(t)
+	svc := newWagering(t, h)
+	w := h.OpenWallet(t, "100.00")
+	cmd := apptest.Command(t, w, "provider-a", "BET", "10.00", "")
+
+	err := h.Tx.WithinTx(context.Background(), func(ctx context.Context) error {
+		_, err := svc.Process(ctx, cmd, app.Meta{}, nil)
+		return err
+	})
+	if !errors.Is(err, app.ErrInsideTransaction) {
+		t.Fatalf("error = %v, want ErrInsideTransaction", err)
+	}
+	if _, err := h.Transactions.FindByIdempotencyKey(context.Background(), "provider-a", cmd.IdempotencyKey); !errors.Is(err, app.ErrNotFound) {
+		t.Fatalf("nothing may be written: %v", err)
+	}
+	if balance(t, h, w.ID()) != "100.00" {
+		t.Fatal("balance must be unchanged")
 	}
 }

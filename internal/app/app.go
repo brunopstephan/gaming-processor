@@ -14,8 +14,10 @@ import (
 // Clock returns the current instant in UTC. It is injected so tests control time.
 type Clock func() time.Time
 
-// SystemClock is the production Clock.
-func SystemClock() time.Time { return time.Now().UTC() }
+// SystemClock is the production Clock. It truncates to microseconds, the
+// PostgreSQL timestamp precision, so a fresh result and its later replay carry
+// identical timestamps.
+func SystemClock() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
 
 // Channel identifies how an operation entered the service.
 type Channel string
