@@ -1,11 +1,11 @@
-// Command wallet runs the wallet service: HTTP API (and, in later plans, the
-// SQS consumer and background workers).
+// Command wallet runs the wallet service. Component toggles choose what this
+// process runs: the HTTP API, the SQS consumer, the outbox relay and the
+// reference worker (all by default).
 package main
 
 import (
 	"fmt"
 	"os"
-	"time"
 
 	"go.uber.org/fx"
 
@@ -19,9 +19,5 @@ func main() {
 		fmt.Fprintln(os.Stderr, "config:", err)
 		os.Exit(1)
 	}
-	// The HTTP drain must be a strict subset of the Fx stop budget, leaving room to close the DB pool.
-	fx.New(
-		composition.Modules(), composition.Logger(),
-		fx.StopTimeout(cfg.HTTP.ShutdownTimeout+10*time.Second),
-	).Run()
+	fx.New(composition.Modules(cfg), composition.Logger(), fx.StopTimeout(composition.StopTimeout(cfg))).Run()
 }

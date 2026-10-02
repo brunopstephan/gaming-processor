@@ -5,6 +5,7 @@ package composition_test
 import (
 	"context"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -13,34 +14,44 @@ import (
 
 	"github.com/brunopstephan/backend-challenge-go/internal/adapters/httpapi"
 	"github.com/brunopstephan/backend-challenge-go/internal/platform/composition"
+	"github.com/brunopstephan/backend-challenge-go/internal/platform/config"
 	"github.com/brunopstephan/backend-challenge-go/internal/platform/health"
 	"github.com/brunopstephan/backend-challenge-go/internal/testsupport/kctest"
 	"github.com/brunopstephan/backend-challenge-go/internal/testsupport/pgtest"
+	"github.com/brunopstephan/backend-challenge-go/internal/testsupport/sqstest"
 )
 
-func setEnv(t *testing.T) {
-	t.Setenv("DATABASE_URL", pgtest.AppURL())
-	t.Setenv("OIDC_ISSUER_URL", kctest.IssuerURL())
-	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
-	t.Setenv("HTTP_SHUTDOWN_TIMEOUT", "5s")
-	t.Setenv("LOG_LEVEL", "error")
+func setEnv(t *testing.T) config.Config {
+	q := sqstest.NewQueues(t, sqstest.Options{})
+	for k, v := range map[string]string{
+		"DATABASE_URL": pgtest.FreshDatabase(t), "OIDC_ISSUER_URL": kctest.IssuerURL(), "HTTP_ADDR": "127.0.0.1:0",
+		"HTTP_SHUTDOWN_TIMEOUT": "5s", "LOG_LEVEL": "error", "AWS_ACCESS_KEY_ID": "test", "AWS_SECRET_ACCESS_KEY": "test",
+		"SQS_ENDPOINT": sqstest.Endpoint(), "SQS_INPUT_QUEUE": q.Input.Name, "SQS_INPUT_DLQ": q.InputDLQ.Name,
+		"SQS_EVENTS_QUEUE": q.Events.Name,
+	} {
+		t.Setenv(k, v)
+	}
+	cfg, err := config.Load(os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
 }
 
 func TestCompositionGraphIsValid(t *testing.T) {
-	setEnv(t)
-	if err := fx.ValidateApp(fx.NopLogger, composition.Modules()); err != nil {
+	cfg := setEnv(t)
+	if err := fx.ValidateApp(fx.NopLogger, composition.Modules(cfg)); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestServiceStartsServesAndDrains(t *testing.T) {
-	pgtest.AppDB(t)
-	setEnv(t)
+	cfg := setEnv(t)
 	var (
 		server    *httpapi.Server
 		readiness *health.Readiness
 	)
-	app := fxtest.New(t, fx.NopLogger, composition.Modules(), fx.Populate(&server, &readiness))
+	app := fxtest.New(t, fx.NopLogger, composition.Modules(cfg), fx.Populate(&server, &readiness))
 	app.RequireStart()
 
 	base := "http://" + server.Addr()
@@ -64,5 +75,26 @@ func TestServiceStartsServesAndDrains(t *testing.T) {
 	client := http.Client{Timeout: time.Second}
 	if _, err := client.Get(base + "/health/live"); err == nil {
 		t.Fatal("server still accepting connections after stop")
+	}
+}
+
+func TestToggleCombinationsValidate(t *testing.T) {
+	cfg := setEnv(t)
+	for name, toggles := range map[string]config.Toggles{
+		"all":           {HTTP: true, Consumer: true, Outbox: true, RefWorker: true},
+		"http only":     {HTTP: true},
+		"consumer only": {Consumer: true},
+		"workers only":  {Outbox: true, RefWorker: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := cfg
+			c.Toggles = toggles
+			if !toggles.HTTP {
+				c.Auth = config.Auth{} // a process without HTTP needs no IdP
+			}
+			if err := fx.ValidateApp(fx.NopLogger, composition.Modules(c)); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
