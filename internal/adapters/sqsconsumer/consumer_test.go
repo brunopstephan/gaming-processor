@@ -272,6 +272,9 @@ func TestHandleDeadLetters(t *testing.T) {
 			if len(dead) != 1 || aws.ToString(dead[0].Body) != tc.body || sqstest.FailureReason(dead[0]) != tc.reason {
 				t.Fatalf("dlq = %+v, want the original body with failureReason %s", dead, tc.reason)
 			}
+			if got := dead[0].Attributes["MessageGroupId"]; got != "group-1" {
+				t.Fatalf("dlq MessageGroupId = %q, want the original group-1", got)
+			}
 			sqstest.Delete(t, f.owner, f.q.InputDLQ.URL, dead[0])
 			f.inputEmpty(t)
 		})
