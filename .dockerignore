@@ -1,0 +1,11 @@
+.git
+.local
+.superpowers
+.env
+bin
+docs
+deploy
+migrations
+scripts
+e2e
+*.md
