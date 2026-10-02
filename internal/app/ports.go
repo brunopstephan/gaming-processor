@@ -1,0 +1,58 @@
+package app
+
+import (
+	"context"
+
+	"github.com/google/uuid"
+
+	"github.com/brunopstephan/backend-challenge-go/internal/domain/events"
+	"github.com/brunopstephan/backend-challenge-go/internal/domain/wagering"
+	"github.com/brunopstephan/backend-challenge-go/internal/domain/wallet"
+)
+
+// TxManager runs fn inside one SQL transaction carried by ctx. Repositories
+// called with that ctx join the transaction; a nested call joins the outer
+// one. fn's error rolls everything back.
+type TxManager interface {
+	WithinTx(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
+// WalletRepository persists the Wallet aggregate.
+type WalletRepository interface {
+	// Create inserts a new wallet; ErrConflict if (playerId, currency) exists.
+	Create(ctx context.Context, w *wallet.Wallet) error
+	// Get reads a wallet without locking; ErrNotFound if missing.
+	Get(ctx context.Context, id uuid.UUID) (*wallet.Wallet, error)
+	// GetForUpdate reads and row-locks a wallet; it requires a transaction.
+	GetForUpdate(ctx context.Context, id uuid.UUID) (*wallet.Wallet, error)
+	// Update writes balance and version, guarded by expectedVersion;
+	// ErrVersionConflict if another writer moved the wallet.
+	Update(ctx context.Context, w *wallet.Wallet, expectedVersion int64) error
+}
+
+// TransactionRepository persists WagerTransactions.
+type TransactionRepository interface {
+	// Insert adds t unless a row with the same id, idempotency key, external
+	// id or OPENING wallet exists; inserted reports which happened.
+	Insert(ctx context.Context, t *wagering.WagerTransaction) (inserted bool, err error)
+	// Update writes the mutable state of t (status, reference, result, retry).
+	Update(ctx context.Context, t *wagering.WagerTransaction) error
+	Get(ctx context.Context, id uuid.UUID) (*wagering.WagerTransaction, error)
+	FindByIdempotencyKey(ctx context.Context, providerID, key string) (*wagering.WagerTransaction, error)
+	FindByExternalID(ctx context.Context, providerID, externalTransactionID string) (*wagering.WagerTransaction, error)
+	// HasProcessedReversal reports whether referenceID already has a PROCESSED
+	// reversal of kind or, when referenceKind is BET, any PROCESSED REFUND or
+	// ROLLBACK — the value of ProcessInput.ReferenceAlreadyReversed.
+	HasProcessedReversal(ctx context.Context, referenceID uuid.UUID, kind, referenceKind wagering.Kind) (bool, error)
+}
+
+// LedgerRepository appends immutable ledger entries.
+type LedgerRepository interface {
+	Append(ctx context.Context, e wallet.LedgerEntry) error
+}
+
+// OutboxRepository stores integration events in the same transaction as the
+// changes that produced them.
+type OutboxRepository interface {
+	Append(ctx context.Context, envs ...events.Envelope) error
+}
