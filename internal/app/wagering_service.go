@@ -103,28 +103,39 @@ func (s *WageringService) lookup(ctx context.Context, cmd wagering.Command, meta
 	existing, err := s.d.Transactions.FindByIdempotencyKey(ctx, cmd.ProviderID, cmd.IdempotencyKey)
 	switch {
 	case err == nil:
-		if existing.PayloadHash() != cmd.PayloadHash() {
-			return TransactionResult{}, true, ErrIdempotencyKeyConflict
-		}
-		if alongside != nil {
-			if err := s.d.Tx.WithinTx(ctx, alongside); err != nil {
-				return TransactionResult{}, true, err
-			}
-		}
-		s.d.Metrics.IdempotentReplay(meta.Channel)
-		return TransactionResult{Transaction: existing, Replay: true}, true, nil
+		return s.replay(ctx, existing, cmd, meta, alongside)
 	case !errors.Is(err, ErrNotFound):
 		return TransactionResult{}, false, err
 	}
-	_, err = s.d.Transactions.FindByExternalID(ctx, cmd.ProviderID, cmd.ExternalTransactionID)
+	byExternal, err := s.d.Transactions.FindByExternalID(ctx, cmd.ProviderID, cmd.ExternalTransactionID)
 	switch {
 	case err == nil:
+		// The key lookup above and this one are separate reads: a concurrent
+		// request with the same key may have committed in between. Same key
+		// means the same operation, so answer as a replay.
+		if byExternal.IdempotencyKey() == cmd.IdempotencyKey {
+			return s.replay(ctx, byExternal, cmd, meta, alongside)
+		}
 		return TransactionResult{}, true, ErrExternalTransactionConflict
 	case errors.Is(err, ErrNotFound):
 		return TransactionResult{}, false, nil
 	default:
 		return TransactionResult{}, false, err
 	}
+}
+
+// replay answers cmd from the already persisted operation existing.
+func (s *WageringService) replay(ctx context.Context, existing *wagering.WagerTransaction, cmd wagering.Command, meta Meta, alongside func(ctx context.Context) error) (TransactionResult, bool, error) {
+	if existing.PayloadHash() != cmd.PayloadHash() {
+		return TransactionResult{}, true, ErrIdempotencyKeyConflict
+	}
+	if alongside != nil {
+		if err := s.d.Tx.WithinTx(ctx, alongside); err != nil {
+			return TransactionResult{}, true, err
+		}
+	}
+	s.d.Metrics.IdempotentReplay(meta.Channel)
+	return TransactionResult{Transaction: existing, Replay: true}, true, nil
 }
 
 // apply locks the wallet, lets the domain decide and persists the outcome in
