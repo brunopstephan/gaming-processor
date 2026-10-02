@@ -36,14 +36,14 @@ func failure(code, category, message string) errorBody {
 func errorResponse(err error) (int, errorBody) {
 	var input *wagering.InputError
 	switch {
+	case errors.Is(err, app.ErrTransient):
+		return http.StatusServiceUnavailable, failure("TEMPORARILY_UNAVAILABLE", "", "temporarily unavailable, retry later")
 	case errors.As(err, &input):
 		body := failure(string(input.Code()), string(wagering.CategoryCorrectable), "invalid request")
 		for _, v := range input.Violations {
 			body.Error.Details = append(body.Error.Details, violationDTO{Field: v.Field, Code: string(v.Code), Reason: v.Reason})
 		}
 		return http.StatusBadRequest, body
-	case errors.Is(err, app.ErrTransient):
-		return http.StatusServiceUnavailable, failure("TEMPORARILY_UNAVAILABLE", "", "temporarily unavailable, retry later")
 	case errors.Is(err, app.ErrIdempotencyKeyConflict):
 		return http.StatusConflict, failure("IDEMPOTENCY_KEY_CONFLICT", string(wagering.CategoryDefinitive), "idempotency key reused with a different payload")
 	case errors.Is(err, app.ErrExternalTransactionConflict):

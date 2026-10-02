@@ -33,6 +33,7 @@ func TestErrorResponseMapping(t *testing.T) {
 	}{
 		{"input", input, 400, "INVALID_MONEY"},
 		{"transient first", fmt.Errorf("x: %w", app.ErrVersionConflict), 503, "TEMPORARILY_UNAVAILABLE"},
+		{"transient beats conflict", errors.Join(app.ErrIdempotencyKeyConflict, app.ErrTransient), 503, "TEMPORARILY_UNAVAILABLE"},
 		{"key conflict", app.ErrIdempotencyKeyConflict, 409, "IDEMPOTENCY_KEY_CONFLICT"},
 		{"external conflict", app.ErrExternalTransactionConflict, 409, "EXTERNAL_TRANSACTION_CONFLICT"},
 		{"wallet exists", app.ErrWalletAlreadyExists, 409, "WALLET_ALREADY_EXISTS"},
@@ -182,5 +183,25 @@ func TestUnknownMethodIsBoundedInMetrics(t *testing.T) {
 	do(router, "FOOBAR", "/nope", "", "")
 	if got := testutil.ToFloat64(m.HTTPRequests.WithLabelValues("OTHER", "unmatched", "404")); got != 1 {
 		t.Fatalf("OTHER/unmatched = %v, want 1", got)
+	}
+}
+
+func TestWriteErrorTransientSetsRetryAfter(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest("GET", "/x", nil)
+	writeError(c, app.ErrTransient)
+	if rec.Code != 503 || rec.Header().Get("Retry-After") != "1" {
+		t.Fatalf("transient = %d Retry-After=%q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+}
+
+func TestUnknownRouteAnswersContractNotFound(t *testing.T) {
+	router, _ := testRouter(t)
+	rec := do(router, "GET", "/nope", "", "")
+	var body errorBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if rec.Code != 404 || body.Error.FailureCode != "NOT_FOUND" {
+		t.Fatalf("GET /nope = %d %s", rec.Code, rec.Body)
 	}
 }

@@ -34,6 +34,10 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	r := gin.New()
 	r.Use(withCorrelation, withLogger(d.Log), accessLog, instrument(d.Metrics), recoverJSON)
 
+	notFound := func(c *gin.Context) { writeError(c, app.ErrNotFound) }
+	r.NoRoute(notFound)
+	r.NoMethod(notFound)
+
 	r.GET("/health/live", liveHandler)
 	r.GET("/health/ready", readyHandler(d.Readiness))
 	r.GET("/metrics", gin.WrapH(promhttp.HandlerFor(d.Metrics.Registry, promhttp.HandlerOpts{})))

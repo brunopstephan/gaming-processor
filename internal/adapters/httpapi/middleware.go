@@ -121,6 +121,8 @@ func authenticate(a auth.Authenticator) gin.HandlerFunc {
 		}
 		p, err := a.Authenticate(c.Request.Context(), raw)
 		if err != nil {
+			logger(c).WarnContext(c.Request.Context(), "authentication failed",
+				"correlationId", correlationID(c), "route", c.FullPath(), "error", err.Error())
 			unauthorized(c)
 			return
 		}

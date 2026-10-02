@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 type wallet struct{ id, player string }
@@ -80,8 +81,8 @@ func TestProcessOverHTTP(t *testing.T) {
 	if byExt.Code != 200 || decode(t, byExt)["transactionId"] != id {
 		t.Fatalf("by external id = %d %s", byExt.Code, byExt.Body)
 	}
-	if api.Metrics == nil {
-		t.Fatal("metrics missing")
+	if got := testutil.ToFloat64(api.Metrics.HTTPRequests.WithLabelValues("POST", "/wagering/transactions", "200")); got < 1 {
+		t.Fatalf("http_requests_total POST /wagering/transactions 200 = %v, want >= 1", got)
 	}
 }
 

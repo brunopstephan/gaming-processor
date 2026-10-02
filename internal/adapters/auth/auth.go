@@ -7,13 +7,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"go.uber.org/fx"
 
 	"github.com/brunopstephan/backend-challenge-go/internal/platform/config"
 )
+
+// jwksFetchTimeout bounds JWKS fetches; go-oidc shares an in-flight fetch with a
+// non-cancellable context, so a stalled IdP would otherwise block key refresh.
+const jwksFetchTimeout = 5 * time.Second
 
 // Scopes that authorize the API.
 const (
@@ -55,7 +61,7 @@ func NewOIDCAuthenticator(cfg config.Config) (*OIDCAuthenticator, error) {
 	if cfg.Auth.IssuerURL == "" {
 		return nil, errors.New("auth: OIDC_ISSUER_URL is required")
 	}
-	keys := oidc.NewRemoteKeySet(context.Background(), cfg.Auth.JWKSURL)
+	keys := oidc.NewRemoteKeySet(oidc.ClientContext(context.Background(), &http.Client{Timeout: jwksFetchTimeout}), cfg.Auth.JWKSURL)
 	verifier := oidc.NewVerifier(cfg.Auth.IssuerURL, keys, &oidc.Config{
 		ClientID:             cfg.Auth.Audience,
 		SupportedSigningAlgs: []string{oidc.RS256},
