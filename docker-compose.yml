@@ -1,0 +1,67 @@
+name: wallet
+
+x-postgres-env: &postgres-env
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+  POSTGRES_DB: postgres
+  WALLET_OWNER_PASSWORD: ${WALLET_OWNER_PASSWORD:-wallet_owner}
+  WALLET_APP_PASSWORD: ${WALLET_APP_PASSWORD:-wallet_app}
+
+x-postgres-healthcheck: &postgres-healthcheck
+  test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d wallet"]
+  interval: 2s
+  timeout: 3s
+  retries: 30
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment: *postgres-env
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck: *postgres-healthcheck
+
+  migrate:
+    image: migrate/migrate:v4.18.3
+    volumes:
+      - ./migrations:/migrations:ro
+    command:
+      - -path=/migrations
+      - -database=postgres://wallet_owner:${WALLET_OWNER_PASSWORD:-wallet_owner}@postgres:5432/wallet?sslmode=disable
+      - up
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  postgres_test:
+    image: postgres:17-alpine
+    profiles: ["test"]
+    environment: *postgres-env
+    ports:
+      - "${POSTGRES_TEST_PORT:-5433}:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - ./deploy/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck: *postgres-healthcheck
+
+  migrate_test:
+    image: migrate/migrate:v4.18.3
+    profiles: ["test"]
+    volumes:
+      - ./migrations:/migrations:ro
+    command:
+      - -path=/migrations
+      - -database=postgres://wallet_owner:${WALLET_OWNER_PASSWORD:-wallet_owner}@postgres_test:5432/wallet?sslmode=disable
+      - up
+    depends_on:
+      postgres_test:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  pgdata:
