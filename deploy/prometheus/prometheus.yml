@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Every wallet replica, discovered through Docker's DNS (one A record per replica).
+  - job_name: wallet
+    metrics_path: /metrics
+    dns_sd_configs:
+      - names: [wallet]
+        type: A
+        port: 8080
+        refresh_interval: 10s
