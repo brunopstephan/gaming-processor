@@ -186,7 +186,51 @@ func (s *WageringService) failure(ctx context.Context, cmd wagering.Command, met
 		s.d.Metrics.ConcurrencyConflict(ConflictUnique)
 		return TransactionResult{}, fmt.Errorf("%w: %w", ErrTransient, err)
 	}
-	return TransactionResult{}, err
+	return s.recordFailure(ctx, cmd, meta, alongside, err)
+}
+
+// recordFailure stores the operation as FAILED (INFRASTRUCTURE_FAILURE) in a
+// new transaction, for audit, after the processing transaction rolled back.
+// The caller's alongside work commits with the FAILED record. If even this
+// write fails, both errors are returned (transient if either is).
+func (s *WageringService) recordFailure(ctx context.Context, cmd wagering.Command, meta Meta, alongside func(ctx context.Context) error, cause error) (TransactionResult, error) {
+	s.d.Log.ErrorContext(ctx, "permanent failure processing wager transaction",
+		"providerId", cmd.ProviderID, "walletId", cmd.WalletID.String(), "correlationId", meta.CorrelationID,
+		"messageId", meta.CausationID, "error", cause.Error())
+	t, err := wagering.NewExternal(newID(), cmd, s.d.Clock())
+	if err != nil {
+		return TransactionResult{}, errors.Join(cause, err)
+	}
+	if err := t.MarkFailed(s.d.Clock()); err != nil {
+		return TransactionResult{}, errors.Join(cause, err)
+	}
+	raced := false
+	err = s.d.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		inserted, err := s.d.Transactions.Insert(ctx, t)
+		if err != nil {
+			return err
+		}
+		if !inserted {
+			raced = true
+			return nil
+		}
+		if err := run(ctx, alongside); err != nil {
+			return &alongsideError{err: err}
+		}
+		return nil
+	})
+	if err != nil {
+		return TransactionResult{}, errors.Join(cause, err)
+	}
+	if raced {
+		res, found, err := s.lookup(ctx, cmd, meta, alongside)
+		if err == nil && !found {
+			return TransactionResult{}, fmt.Errorf("%w: concurrent insert of %q not visible", ErrTransient, cmd.IdempotencyKey)
+		}
+		return res, err
+	}
+	s.completed(ctx, t, meta)
+	return TransactionResult{Transaction: t}, nil
 }
 
 func (s *WageringService) completed(ctx context.Context, t *wagering.WagerTransaction, meta Meta) {
