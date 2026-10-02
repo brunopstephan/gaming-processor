@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -144,9 +145,7 @@ func NewQueues(t testing.TB, opts Options) Queues {
 func create(t testing.TB, c *sqs.Client, name string, attrs map[string]string) Queue {
 	t.Helper()
 	all := map[string]string{"FifoQueue": "true", "ContentBasedDeduplication": "false"}
-	for k, v := range attrs {
-		all[k] = v
-	}
+	maps.Copy(all, attrs)
 	out, err := c.CreateQueue(context.Background(), &sqs.CreateQueueInput{QueueName: aws.String(name), Attributes: all})
 	if err != nil {
 		t.Fatalf("ministack de teste indisponível (%v). %s", err, infraHint)

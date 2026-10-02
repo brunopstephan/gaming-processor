@@ -6,6 +6,7 @@
 # an AWS shared credentials file (profiles wallet-consumer, wallet-publisher,
 # provider-a and provider-b). Safe to re-run.
 set -euo pipefail
+shopt -s inherit_errexit
 : "${MINISTACK_ENDPOINT:?}" "${CREDENTIALS_OUT:?}"
 export AWS_DEFAULT_REGION=us-east-1 AWS_PAGER="" AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test
 awsm() { aws --endpoint-url "$MINISTACK_ENDPOINT" "$@"; }
@@ -30,8 +31,13 @@ ensure_user() {
   awsm iam create-access-key --user-name "$name" --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text
 }
 
-read -r consumer_key consumer_secret <<<"$(ensure_user wallet-consumer)"
-read -r publisher_key publisher_secret <<<"$(ensure_user wallet-publisher)"
+out=$(ensure_user wallet-consumer)
+read -r consumer_key consumer_secret <<<"$out"
+out=$(ensure_user wallet-publisher)
+read -r publisher_key publisher_secret <<<"$out"
+for v in "$consumer_key" "$consumer_secret" "$publisher_key" "$publisher_secret"; do
+  if [ -z "$v" ]; then echo "empty IAM access key or secret; refusing to write credentials" >&2; exit 1; fi
+done
 
 mkdir -p "$(dirname "$CREDENTIALS_OUT")"
 tmp="$CREDENTIALS_OUT.tmp"
