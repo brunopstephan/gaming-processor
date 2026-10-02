@@ -12,6 +12,14 @@ import (
 // Config is the whole service configuration. Later plans add sections.
 type Config struct {
 	Database Database
+	Wagering Wagering
+}
+
+// Wagering configures how PENDING_REFERENCE operations wait for their reference.
+type Wagering struct {
+	ReferenceRetryBaseDelay   time.Duration
+	ReferenceRetryMaxDelay    time.Duration
+	ReferenceRetryMaxAttempts int
 }
 
 // Database configures the PostgreSQL connection pool and per-transaction limits.
@@ -35,10 +43,19 @@ func Load(getenv func(string) string) (Config, error) {
 	if db.URL == "" {
 		errs = append(errs, errors.New("DATABASE_URL is required"))
 	}
+	wagering := Wagering{
+		ReferenceRetryBaseDelay:   positiveDuration(getenv, "REFERENCE_RETRY_BASE_DELAY", 2*time.Second, &errs),
+		ReferenceRetryMaxDelay:    positiveDuration(getenv, "REFERENCE_RETRY_MAX_DELAY", 5*time.Minute, &errs),
+		ReferenceRetryMaxAttempts: positiveInt(getenv, "REFERENCE_RETRY_MAX_ATTEMPTS", 10, &errs),
+	}
+	if wagering.ReferenceRetryMaxDelay != 0 && wagering.ReferenceRetryMaxDelay < wagering.ReferenceRetryBaseDelay {
+		errs = append(errs, fmt.Errorf("REFERENCE_RETRY_MAX_DELAY (%s) must be >= REFERENCE_RETRY_BASE_DELAY (%s)",
+			wagering.ReferenceRetryMaxDelay, wagering.ReferenceRetryBaseDelay))
+	}
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("config: %w", errors.Join(errs...))
 	}
-	return Config{Database: db}, nil
+	return Config{Database: db, Wagering: wagering}, nil
 }
 
 func positiveInt(getenv func(string) string, key string, fallback int, errs *[]error) int {
