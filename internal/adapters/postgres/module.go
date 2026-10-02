@@ -9,6 +9,7 @@ import (
 
 	"github.com/brunopstephan/backend-challenge-go/internal/app"
 	"github.com/brunopstephan/backend-challenge-go/internal/platform/config"
+	"github.com/brunopstephan/backend-challenge-go/internal/platform/health"
 )
 
 // Module wires the database handle, the transaction manager and the
@@ -21,6 +22,7 @@ var Module = fx.Module("postgres",
 		fx.Annotate(NewTransactionRepository, fx.As(new(app.TransactionRepository))),
 		fx.Annotate(NewLedgerRepository, fx.As(new(app.LedgerRepository))),
 		fx.Annotate(NewOutboxRepository, fx.As(new(app.OutboxRepository))),
+		fx.Annotate(newHealthCheck, fx.ResultTags(`group:"readiness"`)),
 	),
 )
 
@@ -47,4 +49,13 @@ func NewDB(lc fx.Lifecycle, cfg config.Config) (*gorm.DB, error) {
 		OnStop: func(context.Context) error { return sqlDB.Close() },
 	})
 	return db, nil
+}
+
+// newHealthCheck reports PostgreSQL readiness with a ping.
+func newHealthCheck(db *gorm.DB) (health.Check, error) {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return health.Check{}, err
+	}
+	return health.Check{Name: "postgres", Probe: sqlDB.PingContext}, nil
 }
