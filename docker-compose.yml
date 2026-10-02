@@ -97,5 +97,56 @@ services:
       - ./deploy/keycloak:/opt/keycloak/data/import:ro
     healthcheck: *keycloak-healthcheck
 
+  ministack:
+    image: ministackorg/ministack:1.5.20
+    environment:
+      AUTH: "true"
+    ports:
+      - "${MINISTACK_PORT:-4566}:4566"
+    healthcheck: &ministack-healthcheck
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:4566/_ministack/health', timeout=3)\""]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  ministack_init:
+    image: amazon/aws-cli:2.37.8
+    depends_on:
+      ministack:
+        condition: service_healthy
+    entrypoint: ["bash", "/provision/provision.sh"]
+    environment:
+      MINISTACK_ENDPOINT: http://ministack:4566
+      CREDENTIALS_OUT: /out/credentials
+    volumes:
+      - ./deploy/ministack:/provision:ro
+      - ./.local/ministack:/out
+
+  ministack_test:
+    image: ministackorg/ministack:1.5.20
+    profiles: ["test"]
+    environment:
+      AUTH: "true"
+    ports:
+      - "${MINISTACK_TEST_PORT:-4567}:4566"
+    networks:
+      default:
+        aliases: [ministack-test] # the aws cli rejects underscores in hostnames
+    healthcheck: *ministack-healthcheck
+
+  ministack_test_init:
+    image: amazon/aws-cli:2.37.8
+    profiles: ["test"]
+    depends_on:
+      ministack_test:
+        condition: service_healthy
+    entrypoint: ["bash", "/provision/provision.sh"]
+    environment:
+      MINISTACK_ENDPOINT: http://ministack-test:4566
+      CREDENTIALS_OUT: /out/credentials
+    volumes:
+      - ./deploy/ministack:/provision:ro
+      - ./.local/ministack-test:/out
+
 volumes:
   pgdata:

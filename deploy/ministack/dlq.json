@@ -1,0 +1,1 @@
+{ "FifoQueue": "true", "ContentBasedDeduplication": "false", "MessageRetentionPeriod": "1209600" }
