@@ -28,13 +28,13 @@ type apiHarness struct {
 func newAPI(t *testing.T) *apiHarness {
 	t.Helper()
 	h := apptest.New(t)
-	wagering, err := app.NewWageringService(h.Deps, wagering.DefaultRetryPolicy())
+	wageringSvc, err := app.NewWageringService(h.Deps, wagering.DefaultRetryPolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := metrics.New()
 	router := httpapi.NewRouter(httpapi.RouterDeps{
-		Auth: authtest.Default(), Wallets: app.NewWalletService(h.Deps), Wagering: wagering,
+		Auth: authtest.Default(), Wallets: app.NewWalletService(h.Deps), Wagering: wageringSvc,
 		Queries: app.NewQueryService(h.Deps), Reconciliation: app.NewReconciliationService(h.Deps),
 		Metrics: m, Readiness: health.NewReadiness(nil), Log: slog.New(slog.DiscardHandler),
 	})

@@ -46,5 +46,10 @@ func NewRouter(d RouterDeps) *gin.Engine {
 	wallets.GET("/:walletId/ledger", wh.ledger)
 	wallets.POST("/:walletId/reconciliation", wh.reconcile)
 
+	th := transactionHandlers{wagering: d.Wagering, queries: d.Queries}
+	r.POST("/wagering/transactions", authn, requireAnyScope(auth.ScopeWagering), th.process)
+	r.GET("/wagering/transactions/:transactionId", authn, requireAnyScope(auth.ScopeWagering, auth.ScopeWageringRead), th.get)
+	r.GET("/providers/:providerId/wagering/transactions/:externalTransactionId", authn, requireAnyScope(auth.ScopeWagering), th.getByExternalID)
+
 	return r
 }
