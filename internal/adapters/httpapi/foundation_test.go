@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/brunopstephan/backend-challenge-go/internal/app"
 	"github.com/brunopstephan/backend-challenge-go/internal/domain/wagering"
@@ -153,5 +154,33 @@ func TestAuthMiddleware(t *testing.T) {
 				t.Fatal("401 must carry WWW-Authenticate: Bearer")
 			}
 		})
+	}
+}
+
+func TestPanicIsLoggedAndMeasured(t *testing.T) {
+	m := metrics.New()
+	router := NewRouter(RouterDeps{
+		Auth: authtest.Default(), Metrics: m, Readiness: health.NewReadiness(nil), Log: slog.New(slog.DiscardHandler),
+	})
+	router.GET("/panic-test", func(*gin.Context) { panic("x") })
+	rec := do(router, "GET", "/panic-test", "", "")
+	var body errorBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if rec.Code != 500 || body.Error.FailureCode != "INTERNAL_ERROR" {
+		t.Fatalf("panic = %d %s", rec.Code, rec.Body)
+	}
+	if got := testutil.ToFloat64(m.HTTPRequests.WithLabelValues("GET", "/panic-test", "500")); got != 1 {
+		t.Fatalf("http_requests_total = %v, want 1", got)
+	}
+}
+
+func TestUnknownMethodIsBoundedInMetrics(t *testing.T) {
+	m := metrics.New()
+	router := NewRouter(RouterDeps{
+		Auth: authtest.Default(), Metrics: m, Readiness: health.NewReadiness(nil), Log: slog.New(slog.DiscardHandler),
+	})
+	do(router, "FOOBAR", "/nope", "", "")
+	if got := testutil.ToFloat64(m.HTTPRequests.WithLabelValues("OTHER", "unmatched", "404")); got != 1 {
+		t.Fatalf("OTHER/unmatched = %v, want 1", got)
 	}
 }

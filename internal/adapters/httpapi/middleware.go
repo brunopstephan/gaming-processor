@@ -78,9 +78,19 @@ func instrument(m *metrics.Metrics) gin.HandlerFunc {
 		start := time.Now()
 		c.Next()
 		route := routeOf(c)
-		m.HTTPRequests.WithLabelValues(c.Request.Method, route, strconv.Itoa(c.Writer.Status())).Inc()
-		m.HTTPDuration.WithLabelValues(c.Request.Method, route).Observe(time.Since(start).Seconds())
+		m.HTTPRequests.WithLabelValues(metricMethod(c.Request.Method), route, strconv.Itoa(c.Writer.Status())).Inc()
+		m.HTTPDuration.WithLabelValues(metricMethod(c.Request.Method), route).Observe(time.Since(start).Seconds())
 	}
+}
+
+// metricMethod bounds the method label cardinality: clients control the method.
+func metricMethod(m string) string {
+	switch m {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodHead, http.MethodOptions:
+		return m
+	}
+	return "OTHER"
 }
 
 func routeOf(c *gin.Context) string {

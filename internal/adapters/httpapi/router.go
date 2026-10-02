@@ -33,7 +33,7 @@ func init() { gin.SetMode(gin.ReleaseMode) }
 // NewRouter builds the API.
 func NewRouter(d RouterDeps) *gin.Engine {
 	r := gin.New()
-	r.Use(withCorrelation, withLogger(d.Log), recoverJSON, accessLog, instrument(d.Metrics))
+	r.Use(withCorrelation, withLogger(d.Log), accessLog, instrument(d.Metrics), recoverJSON)
 
 	r.GET("/health/live", liveHandler)
 	r.GET("/health/ready", readyHandler(d.Readiness))
