@@ -87,8 +87,13 @@ func TestWithinTxNestedJoinsOuter(t *testing.T) {
 
 func TestWithinTxAppliesTimeouts(t *testing.T) {
 	db := newTestDB(t)
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1) // the "outside" check reuses the same connection
 	tm := NewTxManager(db, config.Config{Database: config.Database{LockTimeout: 1500 * time.Millisecond, StatementTimeout: 7 * time.Second}})
-	err := tm.WithinTx(context.Background(), func(ctx context.Context) error {
+	err = tm.WithinTx(context.Background(), func(ctx context.Context) error {
 		var lock, stmt string
 		if err := conn(ctx, db).Raw("SHOW lock_timeout").Scan(&lock).Error; err != nil {
 			return err
@@ -131,7 +136,11 @@ func TestLockTimeoutIsTransient(t *testing.T) {
 			return nil
 		})
 	}()
-	<-locked
+	select {
+	case <-locked:
+	case err := <-done:
+		t.Fatalf("holder returned before locking: %v", err)
+	}
 
 	start := time.Now()
 	err := waiter.WithinTx(context.Background(), func(ctx context.Context) error {
@@ -146,5 +155,22 @@ func TestLockTimeoutIsTransient(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestConnHonorsPerCallContextInTx(t *testing.T) {
+	db := newTestDB(t)
+	tm := testTxManager(db, time.Second)
+	start := time.Now()
+	err := tm.WithinTx(context.Background(), func(ctx context.Context) error {
+		child, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		defer cancel()
+		return conn(child, db).Exec("SELECT pg_sleep(5)").Error
+	})
+	if err == nil {
+		t.Fatal("pg_sleep succeeded, want error from child context timeout")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("took %s, per-call context not honored", elapsed)
 	}
 }

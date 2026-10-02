@@ -50,3 +50,17 @@ func TestLoadInvalid(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadDurationBounds(t *testing.T) {
+	for _, v := range []string{"500us", "25h"} {
+		for _, key := range []string{"DB_LOCK_TIMEOUT", "DB_STATEMENT_TIMEOUT"} {
+			_, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x", key: v}))
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Errorf("%s=%s: err = %v, want error naming key", key, v, err)
+			}
+		}
+	}
+	if _, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x", "DB_LOCK_TIMEOUT": "1ms", "DB_STATEMENT_TIMEOUT": "24h"})); err != nil {
+		t.Fatalf("bounds must be inclusive: %v", err)
+	}
+}

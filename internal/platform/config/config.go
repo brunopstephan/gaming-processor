@@ -60,8 +60,8 @@ func positiveDuration(getenv func(string) string, key string, fallback time.Dura
 		return fallback
 	}
 	v, err := time.ParseDuration(raw)
-	if err != nil || v <= 0 {
-		*errs = append(*errs, fmt.Errorf("%s must be a positive duration, got %q", key, raw))
+	if err != nil || v < time.Millisecond || v > 24*time.Hour {
+		*errs = append(*errs, fmt.Errorf("%s must be a duration between 1ms and 24h, got %q", key, raw))
 		return 0
 	}
 	return v

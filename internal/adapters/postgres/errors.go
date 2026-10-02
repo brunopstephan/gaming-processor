@@ -2,9 +2,11 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 
@@ -29,6 +31,10 @@ func mapError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if errors.Is(err, app.ErrNotFound) || errors.Is(err, app.ErrConflict) ||
+		errors.Is(err, app.ErrVersionConflict) || errors.Is(err, app.ErrTransient) {
+		return err // already classified (e.g. by a repository)
+	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return fmt.Errorf("%w: %w", app.ErrNotFound, err)
 	}
@@ -46,7 +52,9 @@ func mapError(err error) error {
 	var connErr *pgconn.ConnectError
 	var netErr net.Error
 	if errors.As(err, &connErr) || errors.As(err, &netErr) ||
-		errors.Is(err, driver.ErrBadConn) || errors.Is(err, context.DeadlineExceeded) {
+		errors.Is(err, driver.ErrBadConn) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, pgconn.ErrConnClosed) || errors.Is(err, sql.ErrConnDone) || errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("%w: %w", app.ErrTransient, err)
 	}
 	return err

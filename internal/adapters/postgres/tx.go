@@ -54,10 +54,10 @@ func txFrom(ctx context.Context) (*gorm.DB, bool) {
 	return tx, ok
 }
 
-// conn returns the transaction in ctx or, outside a transaction, db bound to ctx.
+// conn returns the transaction in ctx or, outside a transaction, db, both bound to the per-call ctx.
 func conn(ctx context.Context, db *gorm.DB) *gorm.DB {
 	if tx, ok := txFrom(ctx); ok {
-		return tx
+		return tx.WithContext(ctx)
 	}
 	return db.WithContext(ctx)
 }
