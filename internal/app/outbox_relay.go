@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"time"
+
+	"github.com/brunopstephan/backend-challenge-go/internal/platform/faultinject"
 )
 
 // RelaySettings tune the outbox relay. Owner identifies this instance's
@@ -75,6 +77,7 @@ func (r *OutboxRelay) publish(ctx context.Context, e OutboxEvent) {
 	}
 	r.metrics.OutboxPublishAttempt(OutboxPublished)
 	r.metrics.OutboxLag(r.clock().Sub(e.OccurredAt))
+	faultinject.Hit(faultinject.CrashAfterPublishBeforeMark)
 	ok, err := r.repo.MarkPublished(context.WithoutCancel(ctx), e.ID, r.s.Owner)
 	switch {
 	case err != nil:

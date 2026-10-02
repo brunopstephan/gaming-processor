@@ -22,6 +22,7 @@ import (
 
 	"github.com/brunopstephan/backend-challenge-go/internal/app"
 	"github.com/brunopstephan/backend-challenge-go/internal/domain/wagering"
+	"github.com/brunopstephan/backend-challenge-go/internal/platform/faultinject"
 )
 
 // API is the part of the SQS client the consumer uses.
@@ -204,6 +205,7 @@ func (c *Consumer) settle(ctx context.Context, msg types.Message, d decision) bo
 		c.retry(sctx, msg, delay)
 		return false
 	default:
+		faultinject.Hit(faultinject.CrashAfterCommitBeforeDelete)
 		c.delete(sctx, msg, "the redelivery will be dropped by the inbox")
 	}
 	return true
