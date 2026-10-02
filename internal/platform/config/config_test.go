@@ -3,6 +3,7 @@
 package config
 
 import (
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -90,5 +91,45 @@ func TestLoadWageringInvalid(t *testing.T) {
 	}))
 	if err == nil || !strings.Contains(err.Error(), "REFERENCE_RETRY_MAX_DELAY") || !strings.Contains(err.Error(), "REFERENCE_RETRY_MAX_ATTEMPTS") {
 		t.Fatalf("error = %v, want both keys reported", err)
+	}
+}
+
+func TestLoadHTTPAuthLogDefaults(t *testing.T) {
+	cfg, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTP.Addr != ":8080" || cfg.HTTP.ShutdownTimeout != 15*time.Second {
+		t.Fatalf("HTTP = %+v", cfg.HTTP)
+	}
+	if cfg.Auth.IssuerURL != "" || cfg.Auth.Audience != "wallet-api" || cfg.Log.Level != slog.LevelInfo {
+		t.Fatalf("Auth %+v Log %+v", cfg.Auth, cfg.Log)
+	}
+}
+
+func TestLoadAuthDerivesJWKS(t *testing.T) {
+	cfg, err := Load(env(map[string]string{
+		"DATABASE_URL": "postgres://x", "OIDC_ISSUER_URL": "http://kc/realms/wallet",
+		"HTTP_ADDR": "127.0.0.1:0", "LOG_LEVEL": "DEBUG",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Auth.JWKSURL != "http://kc/realms/wallet/protocol/openid-connect/certs" ||
+		cfg.HTTP.Addr != "127.0.0.1:0" || cfg.Log.Level != slog.LevelDebug {
+		t.Fatalf("cfg = %+v", cfg)
+	}
+	cfg, _ = Load(env(map[string]string{
+		"DATABASE_URL": "postgres://x", "OIDC_ISSUER_URL": "http://a", "OIDC_JWKS_URL": "http://internal/certs",
+	}))
+	if cfg.Auth.JWKSURL != "http://internal/certs" {
+		t.Fatalf("explicit JWKS ignored: %s", cfg.Auth.JWKSURL)
+	}
+}
+
+func TestLoadInvalidLogLevelAndTimeout(t *testing.T) {
+	_, err := Load(env(map[string]string{"DATABASE_URL": "postgres://x", "LOG_LEVEL": "loud", "HTTP_SHUTDOWN_TIMEOUT": "0s"}))
+	if err == nil || !strings.Contains(err.Error(), "LOG_LEVEL") || !strings.Contains(err.Error(), "HTTP_SHUTDOWN_TIMEOUT") {
+		t.Fatalf("error = %v", err)
 	}
 }
