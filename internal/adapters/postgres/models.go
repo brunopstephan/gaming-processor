@@ -49,3 +49,34 @@ type transactionModel struct {
 }
 
 func (transactionModel) TableName() string { return "wager_transactions" }
+
+type ledgerEntryModel struct {
+	ID                 uuid.UUID `gorm:"column:id;primaryKey"`
+	WalletID           uuid.UUID `gorm:"column:wallet_id"`
+	TransactionID      uuid.UUID `gorm:"column:transaction_id"`
+	Direction          string    `gorm:"column:direction"`
+	AmountMinor        int64     `gorm:"column:amount_minor"`
+	Currency           string    `gorm:"column:currency"`
+	BalanceBeforeMinor int64     `gorm:"column:balance_before_minor"`
+	BalanceAfterMinor  int64     `gorm:"column:balance_after_minor"`
+	CreatedAt          time.Time `gorm:"column:created_at;autoCreateTime:false"`
+}
+
+func (ledgerEntryModel) TableName() string { return "wallet_ledger_entries" }
+
+type outboxEventModel struct {
+	ID            uuid.UUID  `gorm:"column:id;primaryKey"`
+	AggregateType string     `gorm:"column:aggregate_type"`
+	AggregateID   uuid.UUID  `gorm:"column:aggregate_id"`
+	EventType     string     `gorm:"column:event_type"`
+	Payload       []byte     `gorm:"column:payload;type:jsonb"`
+	OccurredAt    time.Time  `gorm:"column:occurred_at"`
+	Attempts      int        `gorm:"column:attempts"`
+	NextAttemptAt time.Time  `gorm:"column:next_attempt_at"`
+	LockedBy      *string    `gorm:"column:locked_by"`
+	LockedUntil   *time.Time `gorm:"column:locked_until"`
+	PublishedAt   *time.Time `gorm:"column:published_at"`
+	LastError     *string    `gorm:"column:last_error"`
+}
+
+func (outboxEventModel) TableName() string { return "outbox_events" }
