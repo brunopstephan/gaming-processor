@@ -195,30 +195,40 @@ func (s *WageringService) apply(ctx context.Context, t *wagering.WagerTransactio
 // recorded. Anything else is a permanent failure and is recorded as FAILED.
 func (s *WageringService) failure(ctx context.Context, cmd wagering.Command, meta Meta, alongside func(ctx context.Context) error, err error) (TransactionResult, error) {
 	var hookErr *alongsideError
-	switch {
-	case errors.As(err, &hookErr):
+	if errors.As(err, &hookErr) {
 		return TransactionResult{}, err
+	}
+	if terr := s.transientFailure(ctx, err); terr != nil {
+		return TransactionResult{}, terr
+	}
+	return s.recordFailure(ctx, cmd, meta, alongside, err)
+}
+
+// transientFailure returns err as a retryable error (counting the conflict)
+// or nil when err is a permanent failure.
+func (s *WageringService) transientFailure(ctx context.Context, err error) error {
+	switch {
 	case ctx.Err() != nil:
 		// The request was canceled or timed out: the rollback is not a
 		// verdict about the operation, so never record FAILED.
 		s.d.Metrics.ConcurrencyConflict(ConflictTransient)
-		return TransactionResult{}, fmt.Errorf("%w: %w", ErrTransient, ctx.Err())
+		return fmt.Errorf("%w: %w", ErrTransient, ctx.Err())
 	case errors.Is(err, ErrLockTimeout):
 		s.d.Metrics.ConcurrencyConflict(ConflictLockTimeout)
-		return TransactionResult{}, err
+		return err
 	case errors.Is(err, ErrVersionConflict):
 		s.d.Metrics.ConcurrencyConflict(ConflictVersion)
-		return TransactionResult{}, err
+		return err
 	case errors.Is(err, ErrTransient):
 		s.d.Metrics.ConcurrencyConflict(ConflictTransient)
-		return TransactionResult{}, err
+		return err
 	case errors.Is(err, ErrConflict):
 		// A unique index refused a write inside processing (a race the wallet
 		// lock should prevent); retrying re-reads the winner's state.
 		s.d.Metrics.ConcurrencyConflict(ConflictUnique)
-		return TransactionResult{}, fmt.Errorf("%w: %v", ErrTransient, err)
+		return fmt.Errorf("%w: %v", ErrTransient, err)
 	}
-	return s.recordFailure(ctx, cmd, meta, alongside, err)
+	return nil
 }
 
 // recordFailure stores the operation as FAILED (INFRASTRUCTURE_FAILURE) in a

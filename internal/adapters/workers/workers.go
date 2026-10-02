@@ -45,6 +45,14 @@ func registerOutbox(lc fx.Lifecycle, cfg config.Config, relay *app.OutboxRelay, 
 	background.Register(lc, loop, cfg.Outbox.ShutdownTimeout)
 }
 
+// ReferenceModule resumes due PENDING_REFERENCE operations.
+var ReferenceModule = fx.Module("refworker",
+	fx.Invoke(func(lc fx.Lifecycle, cfg config.Config, svc *app.ReferenceService, log *slog.Logger) {
+		loop := background.NewLoop("refworker", cfg.RefWorker.PollInterval, svc.ResumeNext, log)
+		background.Register(lc, loop, cfg.RefWorker.ShutdownTimeout)
+	}),
+)
+
 // instanceID names this process's outbox leases.
 func instanceID() string {
 	host, err := os.Hostname()

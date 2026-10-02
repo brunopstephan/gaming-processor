@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -88,6 +89,38 @@ func (r *TransactionRepository) HasProcessedReversal(ctx context.Context, refere
 			  AND (kind = ? OR ?)
 		)`, referenceID, string(kind), referenceKind == wagering.KindBet).Scan(&exists).Error
 	return exists, mapError(err)
+}
+
+// noKeyUpdate locks the row against writers without blocking the key-share
+// locks taken by foreign keys of operations that reference it.
+var noKeyUpdate = clause.Locking{Strength: "NO KEY UPDATE"}
+
+// ClaimDuePending locks the oldest due PENDING_REFERENCE row (SKIP LOCKED).
+func (r *TransactionRepository) ClaimDuePending(ctx context.Context, now time.Time) (*wagering.WagerTransaction, error) {
+	if _, ok := txFrom(ctx); !ok {
+		return nil, errNoTransaction
+	}
+	var m transactionModel
+	err := conn(ctx, r.db).
+		Clauses(clause.Locking{Strength: noKeyUpdate.Strength, Options: clause.LockingOptionsSkipLocked}).
+		Where("status = ? AND next_attempt_at <= ?", string(wagering.StatusPendingReference), now).
+		Order("next_attempt_at, id").Take(&m).Error
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return transactionFromModel(m)
+}
+
+// GetForUpdate reads and locks one transaction.
+func (r *TransactionRepository) GetForUpdate(ctx context.Context, id uuid.UUID) (*wagering.WagerTransaction, error) {
+	if _, ok := txFrom(ctx); !ok {
+		return nil, errNoTransaction
+	}
+	var m transactionModel
+	if err := conn(ctx, r.db).Clauses(noKeyUpdate).Where("id = ?", id).Take(&m).Error; err != nil {
+		return nil, mapError(err)
+	}
+	return transactionFromModel(m)
 }
 
 func (r *TransactionRepository) findOne(ctx context.Context, query string, args ...any) (*wagering.WagerTransaction, error) {

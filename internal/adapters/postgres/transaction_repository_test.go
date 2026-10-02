@@ -14,6 +14,7 @@ import (
 	"github.com/brunopstephan/backend-challenge-go/internal/app"
 	"github.com/brunopstephan/backend-challenge-go/internal/domain/wagering"
 	"github.com/brunopstephan/backend-challenge-go/internal/domain/wallet"
+	"github.com/brunopstephan/backend-challenge-go/internal/testsupport/pgtest"
 )
 
 func externalCommand(t *testing.T, w *wallet.Wallet, kind, amount, ref string) wagering.Command {
@@ -168,5 +169,84 @@ func TestTransactionUpdateAndReversalLookup(t *testing.T) {
 	missing, _ := wagering.NewExternal(uuid.New(), externalCommand(t, w, "BET", "1.00", ""), time.Now())
 	if err := repo.Update(ctx, missing); !errors.Is(err, app.ErrNotFound) {
 		t.Fatalf("update of missing row: err %v", err)
+	}
+}
+
+// pendingRefund inserts a PENDING_REFERENCE refund whose next attempt is due
+// one minute after nowUS.
+func pendingRefund(t *testing.T, repo *TransactionRepository, w *wallet.Wallet) *wagering.WagerTransaction {
+	t.Helper()
+	refund, err := wagering.NewExternal(uuid.New(), externalCommand(t, w, "REFUND", "5.00", "missing-"+uuid.NewString()), nowUS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	process(t, refund, w, nil)
+	if refund.Status() != wagering.StatusPendingReference {
+		t.Fatalf("status = %s, want PENDING_REFERENCE", refund.Status())
+	}
+	if inserted, err := repo.Insert(context.Background(), refund); err != nil || !inserted {
+		t.Fatalf("Insert = %v, %v", inserted, err)
+	}
+	return refund
+}
+
+func TestClaimDuePendingRequiresTransaction(t *testing.T) {
+	repo := NewTransactionRepository(newTestDB(t))
+	if _, err := repo.ClaimDuePending(context.Background(), time.Now()); !errors.Is(err, errNoTransaction) {
+		t.Fatalf("ClaimDuePending outside a transaction error = %v, want errNoTransaction", err)
+	}
+	if _, err := repo.GetForUpdate(context.Background(), uuid.New()); !errors.Is(err, errNoTransaction) {
+		t.Fatalf("GetForUpdate outside a transaction error = %v, want errNoTransaction", err)
+	}
+}
+
+func TestClaimDuePendingHonorsNextAttemptAt(t *testing.T) {
+	db := pgtest.Open(t, pgtest.FreshDatabase(t))
+	repo := NewTransactionRepository(db)
+	tm := testTxManager(db, time.Second)
+	w := newWallet(t, "100.00")
+	pending := pendingRefund(t, repo, w)
+
+	claim := func(now time.Time) error {
+		return tm.WithinTx(context.Background(), func(ctx context.Context) error {
+			got, err := repo.ClaimDuePending(ctx, now)
+			if err == nil && got.ID() != pending.ID() {
+				t.Errorf("claimed %s, want %s", got.ID(), pending.ID())
+			}
+			return err
+		})
+	}
+	if err := claim(pending.NextAttemptAt().Add(-time.Second)); !errors.Is(err, app.ErrNotFound) {
+		t.Fatalf("claim before due = %v, want ErrNotFound", err)
+	}
+	if err := claim(pending.NextAttemptAt().Add(time.Hour)); err != nil {
+		t.Fatalf("claim when due = %v", err)
+	}
+}
+
+func TestClaimDuePendingSkipsLockedRows(t *testing.T) {
+	db := pgtest.Open(t, pgtest.FreshDatabase(t))
+	repo := NewTransactionRepository(db)
+	tm := testTxManager(db, time.Second)
+	pending := pendingRefund(t, repo, newWallet(t, "100.00"))
+	due := pending.NextAttemptAt().Add(time.Hour)
+
+	var second error
+	err := tm.WithinTx(context.Background(), func(ctx context.Context) error {
+		if _, err := repo.ClaimDuePending(ctx, due); err != nil {
+			return err
+		}
+		// Another transaction, while the first still holds the claim.
+		second = tm.WithinTx(context.Background(), func(ctx context.Context) error {
+			_, err := repo.ClaimDuePending(ctx, due)
+			return err
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(second, app.ErrNotFound) {
+		t.Fatalf("second claim = %v, want ErrNotFound (SKIP LOCKED)", second)
 	}
 }

@@ -61,6 +61,12 @@ type TransactionRepository interface {
 	// reversal of kind or, when referenceKind is BET, any PROCESSED REFUND or
 	// ROLLBACK — the value of ProcessInput.ReferenceAlreadyReversed.
 	HasProcessedReversal(ctx context.Context, referenceID uuid.UUID, kind, referenceKind wagering.Kind) (bool, error)
+	// ClaimDuePending locks the oldest PENDING_REFERENCE operation due at
+	// now, skipping rows locked by other workers; ErrNotFound if none. It
+	// requires a transaction.
+	ClaimDuePending(ctx context.Context, now time.Time) (*wagering.WagerTransaction, error)
+	// GetForUpdate reads and locks a transaction; it requires a transaction.
+	GetForUpdate(ctx context.Context, id uuid.UUID) (*wagering.WagerTransaction, error)
 }
 
 // LedgerRepository appends immutable ledger entries and queries them.
