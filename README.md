@@ -273,6 +273,21 @@ de desenvolvimento usa os perfis IAM `wallet-consumer` e `wallet-publisher`.
 
   O jeito mais simples de reproduzir cada cenário é o E2E (`go test -race -tags=e2e ./e2e/...`).
 
+### Como rodar os cenários manuais de concorrência
+
+Com a stack no ar (`docker compose up --build -d`, 3 réplicas saudáveis) e com `curl` e `python3` instalados:
+
+```bash
+scripts/scenarios/run-all.sh                          # cenários 01..10 + db-check, com tabela-resumo (logs em .local/scenario-logs/)
+scripts/scenarios/03-rajada-mesma-carteira.sh         # ou um cenário isolado
+scripts/scenarios/db-check.sh                         # invariantes globais do banco
+```
+
+Cada cenário imprime finalidade, o que enviou, o esperado, o obtido e `OK`/`FALHOU` (código de saída diferente de zero em falha).
+O cenário 10 mata e recria uma réplica do `wallet` (`docker kill` + `docker compose up -d --no-deps wallet`; sem `--no-deps` o
+`ministack_init` roda de novo e rotaciona as chaves SQS das outras réplicas). `scripts/sqs-send.sh` aceita um 4º argumento
+opcional `DEDUP_ID` para reenviar a mesma mensagem além da deduplicação FIFO.
+
 ## Estrutura do repositório
 
 ```
