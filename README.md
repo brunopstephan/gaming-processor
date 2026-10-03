@@ -107,8 +107,10 @@ Todas são FIFO, sem deduplicação por conteúdo. Contas e identidades:
 - As chaves IAM são geradas pelo MiniStack e gravadas em `.local/ministack/credentials` (ignorado pelo git), com os
   perfis `wallet-consumer`, `wallet-publisher`, `provider-a` e `provider-b`. Os dois provedores usam a credencial root
   da própria conta, porque o MiniStack nega usuários IAM no envio entre contas.
-- O MiniStack guarda tudo em memória. Se o container for recriado, as filas somem, e reprovisionar rotaciona as chaves
-  IAM. Depois de reprovisionar, reinicie os wallets (`docker compose restart wallet`) para que leiam o arquivo novo.
+- Reexecutar o `ministack_init` (inclusive via `docker compose up -d wallet`) mantém as chaves: se o perfil já está no
+  arquivo e a chave ainda consta em `iam list-access-keys`, nada é apagado nem recriado. O MiniStack guarda tudo em
+  memória; só quando ele é reiniciado/recriado (estado perdido) o provisionamento cria chaves novas, e então os wallets
+  precisam ser reiniciados (`docker compose restart wallet`) para ler o arquivo novo.
 
 ## Migrations
 
@@ -284,8 +286,8 @@ scripts/scenarios/db-check.sh                         # invariantes globais do b
 ```
 
 Cada cenário imprime finalidade, o que enviou, o esperado, o obtido e `OK`/`FALHOU` (código de saída diferente de zero em falha).
-O cenário 10 mata e recria uma réplica do `wallet` (`docker kill` + `docker compose up -d --no-deps wallet`; sem `--no-deps` o
-`ministack_init` roda de novo e rotaciona as chaves SQS das outras réplicas). `scripts/sqs-send.sh` aceita um 4º argumento
+O cenário 10 mata e recria uma réplica do `wallet` (`docker kill` + `docker compose up -d --no-deps wallet`; o `--no-deps` evita rodar o `ministack_init`
+de novo, que de todo modo mantém as chaves existentes). `scripts/sqs-send.sh` aceita um 4º argumento
 opcional `DEDUP_ID` para reenviar a mesma mensagem além da deduplicação FIFO.
 
 ## Estrutura do repositório

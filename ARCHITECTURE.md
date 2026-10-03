@@ -455,8 +455,8 @@ O enunciado deixa lacunas; estas são as decisões tomadas:
 
 - **MiniStack:** não verifica o secret nem a assinatura SigV4; o `SenderId` devolvido é o id da conta, não o do usuário
   IAM; um usuário IAM de outra conta é negado no envio entre contas mesmo com políticas corretas, então os provedores
-  usam o root da própria conta; todo o estado fica em memória, e reprovisionar rotaciona as chaves IAM (reinicie os
-  wallets). Na AWS real, o mapa de remetentes usaria o id do usuário IAM. O E2E usa a credencial root do MiniStack de
+  usam o root da própria conta; todo o estado fica em memória; reexecutar o provisionamento mantém as chaves IAM, e só um
+  reinício do MiniStack gera chaves novas (então reinicie os wallets). Na AWS real, o mapa de remetentes usaria o id do usuário IAM. O E2E usa a credencial root do MiniStack de
   teste, enquanto o compose usa os perfis IAM de menor privilégio.
 - **Ordem da outbox:** com vários publishers a ordem por carteira não é garantida; o consumidor deve ordenar por
   `walletVersion` e deduplicar por `eventId` (a deduplicação do SQS vale 5 minutos).

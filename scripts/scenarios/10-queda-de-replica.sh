@@ -19,7 +19,7 @@ burst=$!
 sleep 0.4
 docker kill "$victim" >/dev/null
 sleep 1
-docker compose up -d --no-deps wallet >/dev/null 2>&1  # --no-deps: sem isso o ministack_init roda de novo e rotaciona as chaves SQS das outras replicas
+docker compose up -d --no-deps wallet >/dev/null 2>&1  # --no-deps: evita reexecutar o ministack_init (que de todo modo mantem as chaves existentes)
 wait "$burst"
 summarize "$d"
 first="$(status_counts "$d")"
