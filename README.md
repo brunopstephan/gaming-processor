@@ -8,13 +8,14 @@ nginx, com Keycloak (OIDC), PostgreSQL, SQS (MiniStack), Prometheus e Grafana.
 - Enunciado: [docs/CHALLENGE.md](docs/CHALLENGE.md)
 - Arquitetura e decisões: [ARCHITECTURE.md](ARCHITECTURE.md)
 - Design: [docs/superpowers/specs/2026-10-01-wallet-service-design.md](docs/superpowers/specs/2026-10-01-wallet-service-design.md)
+- Postman: [docs/postman](docs/postman)
 
 ## Pré-requisitos
 
 - Docker com Compose v2.
 - Go 1.25.11 ou superior (para rodar os testes e compilar fora do Docker).
 - Um compilador C (gcc ou clang): os testes E2E compilam o binário com `-race`, que exige cgo. Já vem no macOS; no
-  Linux instale `build-essential`.
+Linux instale `build-essential`.
 - `curl` e `python3`, só para os scripts em `scripts/` e os exemplos abaixo.
 
 ## Subir tudo
@@ -27,14 +28,16 @@ Sobem, nesta ordem de dependência: `postgres` (com as roles `wallet_owner` e `w
 migrations e termina), `keycloak` (importa o realm `wallet`), `ministack` e `ministack_init` (cria as filas, as
 políticas e os usuários IAM, e termina), três réplicas de `wallet`, `nginx`, `prometheus` e `grafana`.
 
-| Serviço | Endereço no host | Observação |
-| --- | --- | --- |
-| API (nginx, balanceia as 3 réplicas) | http://localhost:8000 | `WALLET_PORT`; `/metrics` não é exposto pelo nginx (só por réplica, via Prometheus) |
-| Keycloak | http://localhost:8080 | admin: `admin` / `admin` |
-| MiniStack (SQS, IAM) | http://localhost:4566 | |
-| Prometheus | http://localhost:9090 | |
-| Grafana | http://localhost:3000 | leitura anônima; admin: `admin` / `admin`; dashboard "Wallet Service" já provisionado |
-| PostgreSQL | localhost:5432 | `POSTGRES_PORT`; usuários `wallet_owner` e `wallet_app` |
+
+| Serviço                              | Endereço no host                               | Observação                                                                            |
+| ------------------------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------- |
+| API (nginx, balanceia as 3 réplicas) | [http://localhost:8000](http://localhost:8000) | `WALLET_PORT`; `/metrics` não é exposto pelo nginx (só por réplica, via Prometheus)   |
+| Keycloak                             | [http://localhost:8080](http://localhost:8080) | admin: `admin` / `admin`                                                              |
+| MiniStack (SQS, IAM)                 | [http://localhost:4566](http://localhost:4566) |                                                                                       |
+| Prometheus                           | [http://localhost:9090](http://localhost:9090) |                                                                                       |
+| Grafana                              | [http://localhost:3000](http://localhost:3000) | leitura anônima; admin: `admin` / `admin`; dashboard "Wallet Service" já provisionado |
+| PostgreSQL                           | localhost:5432                                 | `POSTGRES_PORT`; usuários `wallet_owner` e `wallet_app`                               |
+
 
 As réplicas do `wallet` não publicam porta no host: todo o tráfego passa pelo nginx. Para ver as 3 réplicas:
 
@@ -43,7 +46,7 @@ docker compose ps wallet           # wallet-wallet-1, -2 e -3
 docker compose logs -f wallet      # logs JSON de todas, com o prefixo da réplica
 ```
 
-Em http://localhost:9090/targets o job `wallet` lista as 3 réplicas, descobertas pelo DNS do Docker. Para outro número
+Em [http://localhost:9090/targets](http://localhost:9090/targets) o job `wallet` lista as 3 réplicas, descobertas pelo DNS do Docker. Para outro número
 de réplicas, use `docker compose up --build --scale wallet=2`.
 
 Teste de ponta a ponta da stack no ar (abre carteira, aposta por HTTP, aposta por SQS e reconcilia):
@@ -66,16 +69,18 @@ docker compose stop
 Todas estão documentadas, com os valores locais padrão, em [.env.example](.env.example). O `docker compose` lê um
 `.env` na raiz (ignorado pelo git) só para as variáveis `${...}` do `docker-compose.yml`. As principais:
 
-| Grupo | Variáveis |
-| --- | --- |
-| Banco | `DATABASE_URL` (obrigatória), `DB_MAX_OPEN_CONNS`, `DB_LOCK_TIMEOUT`, `DB_STATEMENT_TIMEOUT` |
-| HTTP e log | `HTTP_ADDR` (padrão `:8080`), `HTTP_SHUTDOWN_TIMEOUT`, `LOG_LEVEL` |
-| OIDC | `OIDC_ISSUER_URL` (obrigatória com HTTP), `OIDC_JWKS_URL`, `OIDC_AUDIENCE` (padrão `wallet-api`) |
-| SQS e AWS | `AWS_REGION`, `AWS_SHARED_CREDENTIALS_FILE`, `SQS_ENDPOINT`, `SQS_CONSUMER_PROFILE`, `SQS_PUBLISHER_PROFILE`, `SQS_INPUT_QUEUE`, `SQS_INPUT_DLQ`, `SQS_EVENTS_QUEUE`, `SQS_CONSUMER_WORKERS`, `SQS_WAIT_TIME`, `SQS_MAX_MESSAGES`, `SQS_RETRY_BASE_DELAY`, `SQS_RETRY_MAX_DELAY`, `SQS_SHUTDOWN_TIMEOUT`, `SQS_SENDER_PROVIDER_MAP` |
-| Toggles | `HTTP_ENABLED`, `CONSUMER_ENABLED`, `OUTBOX_ENABLED`, `REFWORKER_ENABLED` (todos ligados por padrão) |
-| Outbox | `OUTBOX_POLL_INTERVAL`, `OUTBOX_BATCH_SIZE`, `OUTBOX_LEASE`, `OUTBOX_RETRY_BASE_DELAY`, `OUTBOX_RETRY_MAX_DELAY`, `OUTBOX_SHUTDOWN_TIMEOUT` |
-| Referências pendentes | `REFWORKER_POLL_INTERVAL`, `REFWORKER_SHUTDOWN_TIMEOUT`, `REFERENCE_RETRY_BASE_DELAY`, `REFERENCE_RETRY_MAX_DELAY`, `REFERENCE_RETRY_MAX_ATTEMPTS` |
-| Compose | `WALLET_PORT`, `POSTGRES_PORT`, `KEYCLOAK_PORT`, `MINISTACK_PORT`, `PROMETHEUS_PORT`, `GRAFANA_PORT`, `*_TEST_PORT`, `POSTGRES_PASSWORD`, `WALLET_OWNER_PASSWORD`, `WALLET_APP_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`, `GRAFANA_ADMIN_PASSWORD` |
+
+| Grupo                 | Variáveis                                                                                                                                                                                                                                                                                                                           |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Banco                 | `DATABASE_URL` (obrigatória), `DB_MAX_OPEN_CONNS`, `DB_LOCK_TIMEOUT`, `DB_STATEMENT_TIMEOUT`                                                                                                                                                                                                                                        |
+| HTTP e log            | `HTTP_ADDR` (padrão `:8080`), `HTTP_SHUTDOWN_TIMEOUT`, `LOG_LEVEL`                                                                                                                                                                                                                                                                  |
+| OIDC                  | `OIDC_ISSUER_URL` (obrigatória com HTTP), `OIDC_JWKS_URL`, `OIDC_AUDIENCE` (padrão `wallet-api`)                                                                                                                                                                                                                                    |
+| SQS e AWS             | `AWS_REGION`, `AWS_SHARED_CREDENTIALS_FILE`, `SQS_ENDPOINT`, `SQS_CONSUMER_PROFILE`, `SQS_PUBLISHER_PROFILE`, `SQS_INPUT_QUEUE`, `SQS_INPUT_DLQ`, `SQS_EVENTS_QUEUE`, `SQS_CONSUMER_WORKERS`, `SQS_WAIT_TIME`, `SQS_MAX_MESSAGES`, `SQS_RETRY_BASE_DELAY`, `SQS_RETRY_MAX_DELAY`, `SQS_SHUTDOWN_TIMEOUT`, `SQS_SENDER_PROVIDER_MAP` |
+| Toggles               | `HTTP_ENABLED`, `CONSUMER_ENABLED`, `OUTBOX_ENABLED`, `REFWORKER_ENABLED` (todos ligados por padrão)                                                                                                                                                                                                                                |
+| Outbox                | `OUTBOX_POLL_INTERVAL`, `OUTBOX_BATCH_SIZE`, `OUTBOX_LEASE`, `OUTBOX_RETRY_BASE_DELAY`, `OUTBOX_RETRY_MAX_DELAY`, `OUTBOX_SHUTDOWN_TIMEOUT`                                                                                                                                                                                         |
+| Referências pendentes | `REFWORKER_POLL_INTERVAL`, `REFWORKER_SHUTDOWN_TIMEOUT`, `REFERENCE_RETRY_BASE_DELAY`, `REFERENCE_RETRY_MAX_DELAY`, `REFERENCE_RETRY_MAX_ATTEMPTS`                                                                                                                                                                                  |
+| Compose               | `WALLET_PORT`, `POSTGRES_PORT`, `KEYCLOAK_PORT`, `MINISTACK_PORT`, `PROMETHEUS_PORT`, `GRAFANA_PORT`, `*_TEST_PORT`, `POSTGRES_PASSWORD`, `WALLET_OWNER_PASSWORD`, `WALLET_APP_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`, `GRAFANA_ADMIN_PASSWORD`                                                                                       |
+
 
 Uma configuração inválida (duração fora de 1ms a 24h, inteiro não positivo, `SQS_RETRY_BASE_DELAY` abaixo de 1s etc.)
 impede o processo de subir, e todos os erros são listados de uma vez.
@@ -90,27 +95,29 @@ O serviço `ministack_init` roda `deploy/ministack/provision.sh` (no container `
 bash 4.4 ou superior, por isso roda lá e não no macOS) depois que o MiniStack fica saudável. É seguro rodá-lo de novo.
 Ele cria:
 
-| Fila | Papel |
-| --- | --- |
-| `wager-transactions.fifo` | entrada dos provedores; visibilidade 30s; redrive para a DLQ com `maxReceiveCount=5` |
-| `wager-transactions-dlq.fifo` | DLQ da entrada |
-| `wallet-events.fifo` | eventos publicados pela outbox; visibilidade 30s; redrive para a DLQ com `maxReceiveCount=5` |
-| `wallet-events-dlq.fifo` | DLQ dos eventos |
+
+| Fila                          | Papel                                                                                        |
+| ----------------------------- | -------------------------------------------------------------------------------------------- |
+| `wager-transactions.fifo`     | entrada dos provedores; visibilidade 30s; redrive para a DLQ com `maxReceiveCount=5`         |
+| `wager-transactions-dlq.fifo` | DLQ da entrada                                                                               |
+| `wallet-events.fifo`          | eventos publicados pela outbox; visibilidade 30s; redrive para a DLQ com `maxReceiveCount=5` |
+| `wallet-events-dlq.fifo`      | DLQ dos eventos                                                                              |
+
 
 Todas são FIFO, sem deduplicação por conteúdo. Contas e identidades:
 
 - A queue policy de `wager-transactions.fifo` permite `SendMessage` só às contas `111111111111` (`provider-a`) e
-  `222222222222` (`provider-b`). Qualquer outra conta recebe `AccessDenied`. O consumidor traduz o `SenderId` da
-  mensagem em `providerId` pelo mapa `SQS_SENDER_PROVIDER_MAP`.
+`222222222222` (`provider-b`). Qualquer outra conta recebe `AccessDenied`. O consumidor traduz o `SenderId` da
+mensagem em `providerId` pelo mapa `SQS_SENDER_PROVIDER_MAP`.
 - Na conta dona (`000000000000`) existem dois usuários IAM com privilégio mínimo: `wallet-consumer` (receber, apagar,
-  mudar visibilidade e enviar para a DLQ de entrada) e `wallet-publisher` (enviar para `wallet-events.fifo`).
+mudar visibilidade e enviar para a DLQ de entrada) e `wallet-publisher` (enviar para `wallet-events.fifo`).
 - As chaves IAM são geradas pelo MiniStack e gravadas em `.local/ministack/credentials` (ignorado pelo git), com os
-  perfis `wallet-consumer`, `wallet-publisher`, `provider-a` e `provider-b`. Os dois provedores usam a credencial root
-  da própria conta, porque o MiniStack nega usuários IAM no envio entre contas.
+perfis `wallet-consumer`, `wallet-publisher`, `provider-a` e `provider-b`. Os dois provedores usam a credencial root
+da própria conta, porque o MiniStack nega usuários IAM no envio entre contas.
 - Reexecutar o `ministack_init` (inclusive via `docker compose up -d wallet`) mantém as chaves: se o perfil já está no
-  arquivo e a chave ainda consta em `iam list-access-keys`, nada é apagado nem recriado. O MiniStack guarda tudo em
-  memória; só quando ele é reiniciado/recriado (estado perdido) o provisionamento cria chaves novas, e então os wallets
-  precisam ser reiniciados (`docker compose restart wallet`) para ler o arquivo novo.
+arquivo e a chave ainda consta em `iam list-access-keys`, nada é apagado nem recriado. O MiniStack guarda tudo em
+memória; só quando ele é reiniciado/recriado (estado perdido) o provisionamento cria chaves novas, e então os wallets
+precisam ser reiniciados (`docker compose restart wallet`) para ler o arquivo novo.
 
 ## Migrations
 
@@ -136,13 +143,15 @@ O realm `wallet` do Keycloak (importado de `deploy/keycloak/realm-wallet.json`) 
 `client_credentials`. O segredo de cada um é `<client_id>-secret` (valores de desenvolvimento, versionados). O token
 tem audience `wallet-api` e dura 300s.
 
-| Cliente | Scopes | `provider_id` | Uso |
-| --- | --- | --- | --- |
-| `provider-a` | `wagering` | `provider-a` | provedor |
-| `provider-b` | `wagering` | `provider-b` | provedor |
-| `wallet-internal` | `wallets`, `wagering:read` | nenhum | serviço interno: carteiras e leitura de qualquer transação |
-| `short-lived` | `wagering` | `provider-a` | token de 2s, para testar expiração |
-| `no-audience` | `wagering` | `provider-a` | token sem a audience `wallet-api`, para testar rejeição |
+
+| Cliente           | Scopes                     | `provider_id` | Uso                                                        |
+| ----------------- | -------------------------- | ------------- | ---------------------------------------------------------- |
+| `provider-a`      | `wagering`                 | `provider-a`  | provedor                                                   |
+| `provider-b`      | `wagering`                 | `provider-b`  | provedor                                                   |
+| `wallet-internal` | `wallets`, `wagering:read` | nenhum        | serviço interno: carteiras e leitura de qualquer transação |
+| `short-lived`     | `wagering`                 | `provider-a`  | token de 2s, para testar expiração                         |
+| `no-audience`     | `wagering`                 | `provider-a`  | token sem a audience `wallet-api`, para testar rejeição    |
+
 
 `scripts/token.sh CLIENTE` imprime o access token (o issuer dos tokens é `http://localhost:8080/realms/wallet`, então
 o token deve ser pedido nesse endereço). Exemplos pelo nginx:
@@ -219,27 +228,29 @@ docker compose --profile test run --rm ministack_test_init
 
 Testes que precisam da infra falham com uma mensagem dizendo qual comando rodar; nunca são pulados em silêncio.
 
-| Camada | O que cobre |
-| --- | --- |
-| Unitários | Money (parsing, escala, overflow, moedas), Wallet e LedgerEntry, máquina de estados, regras dos 5 tipos, hash canônico, config, parsing das mensagens SQS, validação do token, regras dos casos de uso que não dependem do banco, e o dashboard (só usa métricas que o código registra) |
-| Integração | migrations up/down/up, constraints e triggers (ledger imutável), repositórios, atomicidade, handlers HTTP com tokens reais do Keycloak, inbox, consumidor e DLQ no MiniStack, outbox com dois publishers, composição Fx e ordem de parada |
-| E2E (`e2e/`) | o binário real em vários processos do SO, cada teste com banco (`pgtest.FreshDatabase`) e filas (`sqstest.NewQueues`) próprios |
+
+| Camada       | O que cobre                                                                                                                                                                                                                                                                             |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unitários    | Money (parsing, escala, overflow, moedas), Wallet e LedgerEntry, máquina de estados, regras dos 5 tipos, hash canônico, config, parsing das mensagens SQS, validação do token, regras dos casos de uso que não dependem do banco, e o dashboard (só usa métricas que o código registra) |
+| Integração   | migrations up/down/up, constraints e triggers (ledger imutável), repositórios, atomicidade, handlers HTTP com tokens reais do Keycloak, inbox, consumidor e DLQ no MiniStack, outbox com dois publishers, composição Fx e ordem de parada                                               |
+| E2E (`e2e/`) | o binário real em vários processos do SO, cada teste com banco (`pgtest.FreshDatabase`) e filas (`sqstest.NewQueues`) próprios                                                                                                                                                          |
+
 
 Cenários E2E (enunciado, seção 13), em `e2e/concurrency_test.go` e `e2e/recovery_test.go`:
 
 1. 50 BETs idênticas em paralelo nas 3 instâncias: um só débito (`TestSameBetFiftyTimesAcrossInstances`).
 2. 80 + 80 sobre saldo 100, com o vencedor segurando a transação aberta: um `PROCESSED`, um `INSUFFICIENT_FUNDS`, saldo
-   20 (`TestTwoBetsOfEightyOnOneHundred`).
+ 20 (`TestTwoBetsOfEightyOnOneHundred`).
 3. Carteiras distintas em paralelo (`TestDistinctWalletsInParallel`).
 4. Cenários sobre as 3 instâncias, incluindo o cruzamento HTTP e SQS e as recepções repetidas
-   (`TestSameOperationOverHTTPAndSQS`, `TestRepeatedSQSReceptionsAreDeduplicated`).
+ (`TestSameOperationOverHTTPAndSQS`, `TestRepeatedSQSReceptionsAreDeduplicated`).
 5. Queda depois do commit e antes do delete: reentrega sem duplicar (`TestCrashAfterCommitBeforeDelete`).
 6. Dois publishers e queda depois de publicar e antes de marcar: republicação com o mesmo `eventId`
-   (`TestCrashAfterPublishBeforeMark`).
+ (`TestCrashAfterPublishBeforeMark`).
 7. REFUND e ROLLBACK antes da referência: resolução pelo worker e expiração em `REFERENCE_NOT_FOUND`
-   (`TestReversalBeforeReference`).
+ (`TestReversalBeforeReference`).
 8. Reinício (`kill -9` e SIGTERM) preserva idempotência, pendências e consistência
-   (`TestRestartPreservesIdempotencyAndPendings`).
+ (`TestRestartPreservesIdempotencyAndPendings`).
 
 Ao final de cada cenário, o saldo é conferido contra o ledger pela reconciliação.
 
@@ -251,21 +262,20 @@ de desenvolvimento usa os perfis IAM `wallet-consumer` e `wallet-publisher`.
 ## Multi-instância e falhas
 
 - O `docker-compose.yml` sobe 3 réplicas do `wallet` (`deploy.replicas: 3`) atrás do nginx. Todas rodam todos os
-  componentes: HTTP, consumidor SQS, relay da outbox e worker de referências. Os trabalhos são seguros entre instâncias
-  (`SKIP LOCKED`, lease e fencing na outbox, idempotência no banco).
+componentes: HTTP, consumidor SQS, relay da outbox e worker de referências. Os trabalhos são seguros entre instâncias
+(`SKIP LOCKED`, lease e fencing na outbox, idempotência no banco).
 - Para processos dedicados use os toggles `HTTP_ENABLED`, `CONSUMER_ENABLED`, `OUTBOX_ENABLED` e `REFWORKER_ENABLED`.
-  O compose não define serviços dedicados; o E2E e a execução no host usam os toggles. Sem HTTP o processo não expõe
-  `/metrics` nem `/health`.
+O compose não define serviços dedicados; o E2E e a execução no host usam os toggles. Sem HTTP o processo não expõe
+`/metrics` nem `/health`.
 - `stop_grace_period: 90s` no `wallet`. No desligamento o HTTP para primeiro, depois o consumidor e os workers drenam,
-  e por último o pool do banco fecha. O orçamento do Fx (`StopTimeout`) com todos os componentes é 77s (10s de margem
-  + 15s HTTP + 20s consumidor + 12s de abort do consumidor + 10s outbox + 10s worker de referências); o padrão de 10s do
+e por último o pool do banco fecha. O orçamento do Fx (`StopTimeout`) com todos os componentes é 77s (10s de margem
+  - 15s HTTP + 20s consumidor + 12s de abort do consumidor + 10s outbox + 10s worker de referências); o padrão de 10s do
   Docker mataria o processo no meio da drenagem.
 - Durante a drenagem o `/health/ready` responde 503, mas não há espera antes de parar de aceitar conexões: o nginx
-  tenta outra réplica quando a conexão é recusada, e um POST repetido pelo cliente é seguro por causa da
-  `Idempotency-Key`.
+tenta outra réplica quando a conexão é recusada, e um POST repetido pelo cliente é seguro por causa da
+`Idempotency-Key`.
 - Para simular falhas à mão, compile o binário com a tag e rode-o no host com `FAULT` (o processo sai com código 86 no
-  ponto escolhido; sem a tag, `FAULT` não faz nada, e as imagens do compose nunca são compiladas com ela):
-
+ponto escolhido; sem a tag, `FAULT` não faz nada, e as imagens do compose nunca são compiladas com ela):
   ```bash
   go build -tags faultinject -o /tmp/wallet-fault ./cmd/wallet
   cp -n .env.example .env       # valores locais; ajuste se precisar
